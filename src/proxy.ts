@@ -1,0 +1,106 @@
+import { NextResponse, type NextRequest } from 'next/server'
+import { updateSession } from '@/utils/supabase/middleware'
+
+export async function proxy(request: NextRequest) {
+  // 1. Refresh the session and get the supabase client + user
+  const { supabaseResponse, user, supabase } = await updateSession(request)
+
+  const { pathname } = request.nextUrl
+
+  // Helper to redirect while keeping the updated session cookies
+  const redirectWithCookies = (targetPath: string) => {
+    const url = request.nextUrl.clone()
+    url.pathname = targetPath
+    const redirectResponse = NextResponse.redirect(url)
+    
+    // Copy the updated session cookies from supabaseResponse to the redirect response
+    supabaseResponse.cookies.getAll().forEach((cookie) => {
+      redirectResponse.cookies.set(cookie.name, cookie.value, {
+        path: cookie.path,
+        domain: cookie.domain,
+        maxAge: cookie.maxAge,
+        expires: cookie.expires,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        sameSite: cookie.sameSite,
+      })
+    })
+    return redirectResponse
+  }
+
+  const isProtectedRoute = pathname.startsWith('/admin') || pathname.startsWith('/employee') || pathname.startsWith('/superadmin')
+
+  // 2. Handle unauthenticated users
+  if (!user) {
+    if (isProtectedRoute || pathname === '/') {
+      return redirectWithCookies('/login')
+    }
+    return supabaseResponse
+  }
+
+  // 3. Fetch role for authenticated users
+  let role: string | null = null
+  try {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single()
+
+    role = profile?.role || null
+  } catch (error) {
+    console.error('Error retrieving user role in proxy:', error)
+  }
+
+  // 4. Redirect authenticated users away from public auth pages
+  if (pathname === '/login') {
+    if (role === 'superadmin') {
+      return redirectWithCookies('/superadmin')
+    }
+    return redirectWithCookies(role === 'admin' ? '/admin' : '/employee')
+  }
+
+  // 5. Root page redirection
+  if (pathname === '/') {
+    if (role === 'superadmin') {
+      return redirectWithCookies('/superadmin')
+    }
+    return redirectWithCookies(role === 'admin' ? '/admin' : '/employee')
+  }
+
+  // 6. Access control for /superadmin
+  if (pathname.startsWith('/superadmin')) {
+    if (role !== 'superadmin') {
+      return redirectWithCookies('/login')
+    }
+  }
+
+  // 7. Access control for /admin
+  if (pathname.startsWith('/admin')) {
+    if (role !== 'admin') {
+      return redirectWithCookies(role === 'superadmin' ? '/superadmin' : '/employee')
+    }
+  }
+
+  // 8. Access control for /employee
+  if (pathname.startsWith('/employee')) {
+    if (role !== 'admin' && role !== 'employee') {
+      return redirectWithCookies(role === 'superadmin' ? '/superadmin' : '/login')
+    }
+  }
+
+  return supabaseResponse
+}
+
+export const config = {
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - public files (e.g. SVG icons)
+     */
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
+}

@@ -1,28 +1,42 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [showError, setShowError] = useState(false)
+  const searchParams = useSearchParams()
+
+  // Show popup if there's any error param, then clean the URL immediately
+  useEffect(() => {
+    if (searchParams.get('error')) {
+      setShowError(true)
+      // Remove the query string from the URL without triggering a navigation
+      window.history.replaceState(null, '', '/login')
+    }
+  }, [searchParams])
 
   const handleGoogleLogin = async () => {
     setLoading(true)
-    setErrorMsg(null)
+    setShowError(false)
     const supabase = createClient()
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
+        queryParams: {
+          prompt: 'select_account',
+        },
       },
     })
 
     if (error) {
-      setErrorMsg(error.message)
+      setShowError(true)
       setLoading(false)
     }
   }
@@ -32,6 +46,32 @@ export default function LoginPage() {
       {/* Decorative blurry backgrounds */}
       <div className="absolute top-[-10%] left-[-10%] h-[350px] w-[350px] rounded-full bg-neutral-200/40 blur-[80px] dark:bg-neutral-800/10" />
       <div className="absolute bottom-[-10%] right-[-10%] h-[350px] w-[350px] rounded-full bg-zinc-200/40 blur-[80px] dark:bg-zinc-800/10" />
+
+      {/* Error toast popup */}
+      {showError && (
+        <div
+          role="alert"
+          className="fixed top-6 left-1/2 z-50 -translate-x-1/2 flex items-center gap-3 rounded-xl border border-red-200 bg-white px-5 py-3.5 shadow-xl dark:border-red-900/40 dark:bg-zinc-900 animate-in fade-in slide-in-from-top-3 duration-300"
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-red-100 dark:bg-red-950">
+            <svg className="h-4 w-4 text-red-600 dark:text-red-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
+            </svg>
+          </span>
+          <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">
+            No tienes acceso.
+          </p>
+          <button
+            onClick={() => setShowError(false)}
+            aria-label="Cerrar"
+            className="ml-2 rounded-md p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       <div className="relative z-10 w-full max-w-md p-4">
         <Card className="border border-zinc-200/80 bg-white/70 backdrop-blur-xl shadow-2xl dark:border-zinc-800/50 dark:bg-zinc-900/60 dark:shadow-none transition-all duration-300 rounded-xl">
@@ -66,11 +106,6 @@ export default function LoginPage() {
                 </>
               )}
             </Button>
-            {errorMsg && (
-              <div className="p-3 text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-xl text-center font-medium">
-                {errorMsg}
-              </div>
-            )}
           </CardContent>
         </Card>
       </div>

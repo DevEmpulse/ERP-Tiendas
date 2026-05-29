@@ -6,7 +6,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { Search, ChevronLeft, ChevronRight, HelpCircle } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, HelpCircle, Edit, Trash2, ShieldAlert, CheckCircle2 } from 'lucide-react'
+import { createClient } from '@/utils/supabase/client'
+import { SaleModal } from './SaleModal'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 import { GroupedSale, parseSaleDescription, SaleItem } from '@/lib/salesHelper'
 
@@ -14,6 +24,9 @@ interface SalesTableProps {
   sales: GroupedSale[]
   loading: boolean
   highlightedSaleIds?: string[]
+  employees?: any[]
+  storeId?: string | null
+  onSalesChange?: () => void
 }
 
 // Mini items list table component matching CANT | DETALLE | P.UNIT | IMPORTE receipt format
@@ -52,10 +65,63 @@ function ItemsTable({ items }: { items: SaleItem[] }) {
   )
 }
 
-export function SalesTable({ sales, loading, highlightedSaleIds = [] }: SalesTableProps) {
+export function SalesTable({
+  sales,
+  loading,
+  highlightedSaleIds = [],
+  employees = [],
+  storeId = null,
+  onSalesChange = () => {}
+}: SalesTableProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 8
+
+  // Modals state
+  const [isEditOpen, setIsEditOpen] = useState(false)
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false)
+  const [selectedSale, setSelectedSale] = useState<GroupedSale | null>(null)
+  
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [successMsg, setSuccessMsg] = useState<string | null>(null)
+
+  const supabase = createClient()
+
+  // Handle Delete Sale
+  const handleDeleteSale = async () => {
+    if (!selectedSale) return
+
+    setSubmitting(true)
+    setErrorMsg(null)
+    setSuccessMsg(null)
+
+    try {
+      const recordIdsToDelete = selectedSale.payments.map(p => p.id)
+      if (recordIdsToDelete.length > 0) {
+        const { error } = await supabase
+          .from('sales')
+          .delete()
+          .in('id', recordIdsToDelete)
+
+        if (error) throw error
+      }
+
+      setSuccessMsg('Venta eliminada con éxito.')
+      onSalesChange()
+
+      setTimeout(() => {
+        setIsDeleteOpen(false)
+        setSuccessMsg(null)
+        setSelectedSale(null)
+      }, 1500)
+    } catch (err: any) {
+      console.error('Error deleting sale:', err)
+      setErrorMsg(err.message || 'Error al eliminar la venta.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   // Format currency
   const formatCurrency = (value: number | string) => {
@@ -64,6 +130,19 @@ export function SalesTable({ sales, loading, highlightedSaleIds = [] }: SalesTab
       currency: 'CLP',
       minimumFractionDigits: 0
     }).format(Number(value))
+  }
+
+  // Format Date (DD/MM/YYYY)
+  const formatDate = (isoString: string) => {
+    try {
+      const date = new Date(isoString)
+      const day = String(date.getDate()).padStart(2, '0')
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const year = date.getFullYear()
+      return `${day}/${month}/${year}`
+    } catch {
+      return '--/--/----'
+    }
   }
 
   // Format Time (HH:MM)
@@ -197,8 +276,8 @@ export function SalesTable({ sales, loading, highlightedSaleIds = [] }: SalesTab
             <Table>
               <TableHeader className="bg-zinc-50/75 dark:bg-zinc-950/30 border-b border-zinc-100 dark:border-zinc-800/80">
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[100px] text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 py-3 pl-6">
-                    Hora
+                  <TableHead className="w-[125px] text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 py-3 pl-6">
+                    Fecha / Hora
                   </TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 py-3">
                     Empleada
@@ -209,11 +288,14 @@ export function SalesTable({ sales, loading, highlightedSaleIds = [] }: SalesTab
                   <TableHead className="text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 py-3">
                     Método de Pago
                   </TableHead>
-                  <TableHead className="text-right text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 py-3 pr-6">
-                    Monto
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
+                    <TableHead className="text-right text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 py-3">
+                      Monto
+                    </TableHead>
+                    <TableHead className="text-right text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 py-3 pr-6">
+                      Acciones
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
               <TableBody className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
                 {currentSales.map((sale) => {
                   const isHighlighted = highlightedSaleIds.includes(sale.id) || sale.payments.some(p => highlightedSaleIds.includes(p.id))
@@ -225,17 +307,33 @@ export function SalesTable({ sales, loading, highlightedSaleIds = [] }: SalesTab
                           : 'hover:bg-zinc-50/30 dark:hover:bg-zinc-800/20'
                         }`}
                     >
-                      <TableCell className="font-medium text-zinc-700 dark:text-zinc-300 py-3 pl-6">
-                        {formatTime(sale.created_at)}
+                      <TableCell className="py-3 pl-6">
+                        <div className="flex flex-col">
+                          <span className="font-semibold text-zinc-700 dark:text-zinc-200">
+                            {formatDate(sale.created_at)}
+                          </span>
+                          <span className="text-xs text-zinc-450 dark:text-zinc-400">
+                            {formatTime(sale.created_at)}
+                          </span>
+                        </div>
                       </TableCell>
                       <TableCell className="py-3">
                         <div className="flex flex-col">
-                          <span className="font-semibold text-zinc-850 dark:text-zinc-150">
-                            {sale.profiles?.name || 'Pre-cargado / Sin nombre'}
-                          </span>
-                          <span className="text-xs text-zinc-400">
-                            {sale.profiles?.email || 'sin-email@tienda.com'}
-                          </span>
+                          {sale.employee_id ? (
+                            <>
+                              <span className="font-semibold text-zinc-850 dark:text-zinc-150">
+                                {sale.profiles?.name || 'Sin nombre'}
+                              </span>
+                              <span className="text-xs text-zinc-400">
+                                {sale.profiles?.email || 'sin-email@tienda.com'}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-zinc-400 dark:text-zinc-500 italic">
+                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-300 dark:bg-zinc-600 inline-block" />
+                              Empleada eliminada
+                            </span>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="py-3 pr-4">
@@ -262,8 +360,34 @@ export function SalesTable({ sales, loading, highlightedSaleIds = [] }: SalesTab
                           ))}
                         </div>
                       </TableCell>
-                      <TableCell className="text-right font-bold text-zinc-900 dark:text-zinc-50 py-3 pr-6">
+                      <TableCell className="text-right font-bold text-zinc-900 dark:text-zinc-50 py-3">
                         {formatCurrency(sale.total_amount)}
+                      </TableCell>
+                      <TableCell className="py-3 text-right pr-6 text-xs">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setSelectedSale(sale)
+                              setIsEditOpen(true)
+                            }}
+                            className="h-7 w-7 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                          >
+                            <Edit className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setSelectedSale(sale)
+                              setIsDeleteOpen(true)
+                            }}
+                            className="h-7 w-7 text-zinc-500 hover:text-red-650 hover:bg-red-50 dark:text-zinc-400 dark:hover:text-red-400 dark:hover:bg-red-950/20 rounded-lg cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   )
@@ -307,6 +431,74 @@ export function SalesTable({ sales, loading, highlightedSaleIds = [] }: SalesTab
           </div>
         )}
       </CardContent>
+
+      {/* Sale Edit Modal */}
+      <SaleModal
+        isOpen={isEditOpen}
+        onOpenChange={setIsEditOpen}
+        storeId={storeId}
+        employees={employees}
+        saleToEdit={selectedSale}
+        onSuccess={onSalesChange}
+      />
+
+      {/* Sale Delete Confirmation Modal */}
+      <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+        <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
+          <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
+            <DialogTitle className="text-base font-bold text-red-600 dark:text-red-400 flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5" />
+              ¿Confirmas eliminar esta venta?
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+              {selectedSale?.is_combined ? (
+                <span>
+                  Esta venta es un <strong>pago combinado</strong>. Eliminar esta fila borrará la transacción completa (es decir, el desglose de efectivo, transferencia y tarjeta asociado a esta referencia: <strong>#{selectedSale.ref_code}</strong>).
+                </span>
+              ) : (
+                <span>
+                  Esta acción eliminará de forma permanente el registro de venta por <strong>{formatCurrency(selectedSale?.total_amount || 0)}</strong>.
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {errorMsg && (
+            <div className="flex items-start gap-2 p-3 text-xs text-red-655 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
+              <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {successMsg && (
+            <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
+              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{successMsg}</span>
+            </div>
+          )}
+
+          <DialogFooter className="pt-4 flex gap-2 justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={submitting}
+              onClick={() => setIsDeleteOpen(false)}
+              className="h-9 px-4 rounded-lg border-zinc-200 text-zinc-650 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-350 dark:hover:bg-zinc-950 cursor-pointer text-xs font-semibold"
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={submitting}
+              onClick={handleDeleteSale}
+              className="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-500 text-white dark:bg-red-750 dark:hover:bg-red-700 cursor-pointer text-xs font-semibold"
+            >
+              {submitting ? 'Eliminando...' : 'Sí, Eliminar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

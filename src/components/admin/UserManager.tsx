@@ -17,7 +17,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Users, UserPlus, Search, Mail, ShieldAlert, CheckCircle2, BadgeAlert } from 'lucide-react'
+import { Users, UserPlus, Search, Mail, ShieldAlert, CheckCircle2, BadgeAlert, Edit, Trash2 } from 'lucide-react'
 
 interface UserProfile {
   id: string
@@ -44,6 +44,14 @@ export function UserManager({ storeId }: UserManagerProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
+  // Edit/Delete states
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [isEditOpen, setIsEditOpen] = useState(false)
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false)
+  const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editEmail, setEditEmail] = useState('')
+
   const supabase = createClient()
 
   // Fetch current profiles
@@ -67,8 +75,105 @@ export function UserManager({ storeId }: UserManagerProps) {
 
   useEffect(() => {
     fetchProfiles()
+    
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        setCurrentUserId(data.user.id)
+      }
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Handle Edit Member
+  const handleEditUser = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedUser) return
+
+    if (!editName.trim()) {
+      setErrorMsg('Por favor introduce el nombre.')
+      return
+    }
+
+    if (!editEmail.toLowerCase().endsWith('@gmail.com')) {
+      setErrorMsg('Por el momento, solo se admiten correos de Gmail (@gmail.com).')
+      return
+    }
+
+    setSubmitting(true)
+    setErrorMsg(null)
+    setSuccessMsg(null)
+
+    try {
+      const { error } = await supabase.rpc('update_employee_user', {
+        p_employee_id: selectedUser.id,
+        p_name: editName.trim(),
+        p_email: editEmail.trim().toLowerCase()
+      })
+
+      if (error) throw error
+
+      setSuccessMsg('Miembro del equipo actualizado con éxito.')
+      await fetchProfiles()
+
+      setTimeout(() => {
+        setIsEditOpen(false)
+        setSuccessMsg(null)
+        setSelectedUser(null)
+      }, 1500)
+    } catch (err: any) {
+      console.error('Error updating employee:', err)
+      setErrorMsg(err.message || 'Error al actualizar el miembro del equipo.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // Handle Delete Member
+  const handleDeleteUser = async () => {
+    if (!selectedUser) return
+
+    setSubmitting(true)
+    setErrorMsg(null)
+    setSuccessMsg(null)
+
+    try {
+      const { error } = await supabase.rpc('delete_employee_user', {
+        p_employee_id: selectedUser.id
+      })
+
+      if (error) throw error
+
+      setSuccessMsg('Miembro del equipo eliminado con éxito.')
+      await fetchProfiles()
+
+      setTimeout(() => {
+        setIsDeleteOpen(false)
+        setSuccessMsg(null)
+        setSelectedUser(null)
+      }, 1500)
+    } catch (err: any) {
+      console.error('Error deleting employee:', err)
+      setErrorMsg(err.message || 'Error al eliminar el miembro del equipo.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const openEdit = (user: UserProfile) => {
+    setSelectedUser(user)
+    setEditName(user.name || '')
+    setEditEmail(user.email || '')
+    setErrorMsg(null)
+    setSuccessMsg(null)
+    setIsEditOpen(true)
+  }
+
+  const openDelete = (user: UserProfile) => {
+    setSelectedUser(user)
+    setErrorMsg(null)
+    setSuccessMsg(null)
+    setIsDeleteOpen(true)
+  }
 
   // Handle invitation submission
   const handleSubmitInvite = async (e: React.FormEvent) => {
@@ -293,8 +398,11 @@ export function UserManager({ storeId }: UserManagerProps) {
                   <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
                     Rol
                   </TableHead>
-                  <TableHead className="py-2.5 text-right pr-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                  <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
                     Fecha Ingreso
+                  </TableHead>
+                  <TableHead className="py-2.5 text-right pr-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                    Acciones
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -325,8 +433,30 @@ export function UserManager({ storeId }: UserManagerProps) {
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="py-3 text-right pr-6 text-xs text-zinc-400">
+                    <TableCell className="py-3 text-xs text-zinc-400">
                       {formatDate(user.created_at)}
+                    </TableCell>
+                    <TableCell className="py-3 text-right pr-6 text-xs">
+                      {user.id !== currentUserId && (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openEdit(user)}
+                            className="h-7 w-7 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                          >
+                            <Edit className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openDelete(user)}
+                            className="h-7 w-7 text-zinc-500 hover:text-red-650 hover:bg-red-50 dark:text-zinc-400 dark:hover:text-red-400 dark:hover:bg-red-950/20 rounded-lg cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -335,6 +465,128 @@ export function UserManager({ storeId }: UserManagerProps) {
           </div>
         )}
       </CardContent>
+
+      {/* Edit Employee Modal */}
+      <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
+        <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
+          <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
+            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
+              Editar Perfil de Empleado
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+              Actualiza el nombre y correo Gmail del miembro del equipo.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleEditUser} className="space-y-4 pt-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-emp-name" className="text-xs font-semibold text-zinc-650 dark:text-zinc-300">
+                Nombre Completo
+              </Label>
+              <Input
+                id="edit-emp-name"
+                placeholder="Ej. María González"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                required
+                className="h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-emp-email" className="text-xs font-semibold text-zinc-650 dark:text-zinc-300">
+                Correo Electrónico (Gmail)
+              </Label>
+              <div className="relative">
+                <Mail className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-400" />
+                <Input
+                  id="edit-emp-email"
+                  type="email"
+                  placeholder="ejemplo@gmail.com"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  required
+                  className="pl-9 h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
+                />
+              </div>
+            </div>
+
+            {errorMsg && (
+              <div className="flex items-start gap-2 p-3 text-xs text-red-650 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
+                <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            {successMsg && (
+              <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
+                <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
+            <DialogFooter className="pt-2">
+              <Button
+                type="submit"
+                disabled={submitting}
+                className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
+              >
+                {submitting ? 'Guardando...' : 'Actualizar Empleado'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Employee Confirmation Modal */}
+      <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+        <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
+          <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
+            <DialogTitle className="text-base font-bold text-red-600 dark:text-red-400 flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5" />
+              ¿Confirmas eliminar este empleado?
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+              Esta acción eliminará de forma permanente al empleado <strong>{selectedUser?.name}</strong> de la base de datos y de la autenticación de Supabase. El usuario ya no podrá iniciar sesión.
+            </DialogDescription>
+          </DialogHeader>
+
+          {errorMsg && (
+            <div className="flex items-start gap-2 p-3 text-xs text-red-655 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
+              <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {successMsg && (
+            <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
+              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{successMsg}</span>
+            </div>
+          )}
+
+          <DialogFooter className="pt-4 flex gap-2 justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={submitting}
+              onClick={() => setIsDeleteOpen(false)}
+              className="h-9 px-4 rounded-lg border-zinc-200 text-zinc-650 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-350 dark:hover:bg-zinc-950 cursor-pointer text-xs font-semibold"
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={submitting}
+              onClick={handleDeleteUser}
+              className="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-500 text-white dark:bg-red-750 dark:hover:bg-red-700 cursor-pointer text-xs font-semibold"
+            >
+              {submitting ? 'Eliminando...' : 'Sí, Eliminar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

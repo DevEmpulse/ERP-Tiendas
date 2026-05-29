@@ -40,6 +40,7 @@ export async function proxy(request: NextRequest) {
 
   // 3. Fetch role for authenticated users
   let role: string | null = null
+  let hasProfile = false
   try {
     const { data: profile } = await supabase
       .from('profiles')
@@ -47,9 +48,34 @@ export async function proxy(request: NextRequest) {
       .eq('id', user.id)
       .single()
 
-    role = profile?.role || null
+    if (profile) {
+      role = profile.role
+      hasProfile = true
+    }
   } catch (error) {
     console.error('Error retrieving user role in proxy:', error)
+  }
+
+  // If authenticated but has NO profile in our database, they are unauthorized.
+  // We must sign them out, clear cookies, and redirect them to /login with an error.
+  if (user && !hasProfile) {
+    if (pathname === '/login') {
+      const response = NextResponse.next()
+      request.cookies.getAll().forEach((cookie) => {
+        if (cookie.name.startsWith('sb-')) {
+          response.cookies.delete(cookie.name)
+        }
+      })
+      return response
+    }
+    
+    const response = redirectWithCookies('/login?error=unauthorized')
+    request.cookies.getAll().forEach((cookie) => {
+      if (cookie.name.startsWith('sb-')) {
+        response.cookies.delete(cookie.name)
+      }
+    })
+    return response
   }
 
   // 4. Redirect authenticated users away from public auth pages

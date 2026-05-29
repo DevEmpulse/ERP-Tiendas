@@ -18,6 +18,8 @@ export interface Sale {
   payment_method: 'cash' | 'transfer' | 'card'
   total_amount: number | string
   employee_id: string
+  client_id?: string | null
+  clients?: { id: string, phone: string | null } | null
   profiles?: SaleProfile | null
 }
 
@@ -83,6 +85,8 @@ export interface GroupedSale {
   total_amount: number
   is_combined: boolean
   ref_code?: string
+  client_id?: string | null
+  client_phone?: string | null
 }
 
 /**
@@ -141,7 +145,9 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           payments: [{ id: sale.id, method: sale.payment_method, amount: amount }],
           total_amount: amount,
           is_combined: false,
-          ref_code: refCode
+          ref_code: refCode,
+          client_id: sale.client_id || null,
+          client_phone: sale.clients?.phone || null
         }
         grouped.push(newGroup)
         refMap.set(refCode, grouped.length - 1)
@@ -171,7 +177,9 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           profiles: sale.profiles || null,
           payments: [{ id: sale.id, method: sale.payment_method, amount: amount }],
           total_amount: amount,
-          is_combined: false
+          is_combined: false,
+          client_id: sale.client_id || null,
+          client_phone: sale.clients?.phone || null
         }
         grouped.push(newGroup)
         fallbackMap.set(key, grouped.length - 1)

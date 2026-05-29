@@ -8,6 +8,7 @@ import { DashboardView } from '@/components/admin/DashboardView'
 import { HistoryView } from '@/components/admin/HistoryView'
 import { EmployeesView } from '@/components/admin/EmployeesView'
 import { StaffManagementView } from '@/components/admin/StaffManagementView'
+import { ClientManager } from '@/components/admin/ClientManager'
 import { Button } from '@/components/ui/button'
 import { groupSales } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -59,6 +60,9 @@ export default function AdminPage() {
   // Data States
   const [sales, setSales] = useState<Sale[]>([])
   const [highlightedSaleIds, setHighlightedSaleIds] = useState<string[]>([])
+  const [employeesList, setEmployeesList] = useState<Profile[]>([])
+  const [refreshSalesKey, setRefreshSalesKey] = useState(0)
+  const triggerRefreshSales = () => setRefreshSalesKey(prev => prev + 1)
 
   // Sign out handler
   const handleLogout = async () => {
@@ -117,7 +121,6 @@ export default function AdminPage() {
 
     loadAdminContext()
   }, [router, supabase])
-
   // Load Sales Data once store is known
   useEffect(() => {
     if (!userProfile?.store_id) return
@@ -135,6 +138,11 @@ export default function AdminPage() {
             payment_method,
             total_amount,
             employee_id,
+            client_id,
+            clients (
+              id,
+              phone
+            ),
             profiles (
               id,
               name,
@@ -160,6 +168,28 @@ export default function AdminPage() {
     }
 
     loadSalesData()
+  }, [userProfile, supabase, refreshSalesKey])
+
+  // Load Employees list
+  useEffect(() => {
+    if (!userProfile?.store_id) return
+
+    async function loadEmployees() {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id, name, email, role, store_id')
+          .order('name', { ascending: true })
+
+        if (!error && data) {
+          setEmployeesList(data as Profile[])
+        }
+      } catch (err) {
+        console.error('Error loading employees:', err)
+      }
+    }
+
+    loadEmployees()
   }, [userProfile, supabase])
 
   // Realtime subscription for sales INSERT events
@@ -287,6 +317,10 @@ export default function AdminPage() {
             previousIncome={previousIncome}
             loading={dataLoading}
             highlightedSaleIds={highlightedSaleIds}
+            employees={employeesList as any}
+            storeId={userProfile?.store_id || null}
+            storeName={storeInfo?.name || 'Mi Tienda'}
+            onSalesChange={triggerRefreshSales}
           />
         )
       case 'history':
@@ -294,10 +328,16 @@ export default function AdminPage() {
           <HistoryView
             sales={groupSales(sales as any)}
             loading={dataLoading}
+            employees={employeesList as any}
+            storeId={userProfile?.store_id || null}
+            storeName={storeInfo?.name || 'Mi Tienda'}
+            onSalesChange={triggerRefreshSales}
           />
         )
       case 'employees':
         return <EmployeesView />
+      case 'clients':
+        return <ClientManager storeId={userProfile?.store_id || null} />
       case 'staff':
         return <StaffManagementView storeId={userProfile?.store_id || null} />
       default:

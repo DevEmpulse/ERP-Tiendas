@@ -8,9 +8,20 @@ import { GroupedSale } from '@/lib/salesHelper'
 interface HistoryViewProps {
   sales: GroupedSale[]
   loading: boolean
+  employees?: any[]
+  storeId?: string | null
+  storeName?: string
+  onSalesChange?: () => void
 }
 
-export function HistoryView({ sales, loading }: HistoryViewProps) {
+export function HistoryView({
+  sales,
+  loading,
+  employees = [],
+  storeId = null,
+  storeName = 'ERP Tiendas',
+  onSalesChange = () => {}
+}: HistoryViewProps) {
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Title Header */}
@@ -28,7 +39,12 @@ export function HistoryView({ sales, loading }: HistoryViewProps) {
       <SalesHistory
         sales={sales}
         loading={loading}
+        employees={employees}
+        storeId={storeId}
+        storeName={storeName}
+        onSalesChange={onSalesChange}
       />
     </div>
   )
 }
+

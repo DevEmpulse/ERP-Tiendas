@@ -29,7 +29,7 @@ create table public.clients (
 create table public.sales (
   id uuid primary key default gen_random_uuid(),
   store_id uuid references public.stores(id) on delete cascade not null,
-  employee_id uuid references public.profiles(id) on delete restrict not null,
+  employee_id uuid references public.profiles(id) on delete set null,
   description text not null,
   payment_method text check (payment_method in ('cash', 'transfer', 'card')) not null,
   total_amount numeric(10,2) not null,
@@ -309,4 +309,112 @@ BEGIN
   RETURN new;
 END;
 $$;
+
+
+-- 9. Stored procedures for employee user deletion and modification (Admin actions)
+
+CREATE OR REPLACE FUNCTION public.delete_employee_user(p_employee_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_store_id uuid;
+BEGIN
+  -- Get the store_id of the employee being deleted
+  SELECT store_id INTO v_store_id
+  FROM public.profiles
+  WHERE id = p_employee_id;
+
+  -- Check if caller is admin of the same store
+  IF NOT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND role = 'admin' AND store_id = v_store_id
+  ) THEN
+    RAISE EXCEPTION 'Unauthorized: Only store admins can delete employees';
+  END IF;
+
+  -- Prevent deleting yourself
+  IF p_employee_id = auth.uid() THEN
+    RAISE EXCEPTION 'Cannot delete your own user profile';
+  END IF;
+
+  -- Detach sales from this employee (preserve history, nullify reference)
+  UPDATE public.sales
+  SET employee_id = NULL
+  WHERE employee_id = p_employee_id;
+
+  -- Delete from auth.users (which cascades to public.profiles)
+  DELETE FROM auth.users
+  WHERE id = p_employee_id;
+END;
+$$;
+
+
+CREATE OR REPLACE FUNCTION public.update_employee_user(
+  p_employee_id uuid,
+  p_name text,
+  p_email text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_store_id uuid;
+BEGIN
+  -- Get the store_id of the employee being edited
+  SELECT store_id INTO v_store_id
+  FROM public.profiles
+  WHERE id = p_employee_id;
+
+  -- Check if caller is admin of the same store
+  IF NOT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND role = 'admin' AND store_id = v_store_id
+  ) THEN
+    RAISE EXCEPTION 'Unauthorized: Only store admins can edit employees';
+  END IF;
+
+  -- Update profiles
+  UPDATE public.profiles
+  SET name = p_name,
+      email = p_email
+  WHERE id = p_employee_id;
+
+  -- Update auth.users email (if not a preloaded dummy user without email)
+  UPDATE auth.users
+  SET email = p_email
+  WHERE id = p_employee_id AND email IS NOT NULL;
+END;
+$$;
+
+-- 10. Super Admin RLS Policies for Whitelist, Profiles, and Stores
+-- 10.1 allowed_admins policies
+DROP POLICY IF EXISTS "Superadmins can do everything on allowed_admins" ON public.allowed_admins;
+CREATE POLICY "Superadmins can do everything on allowed_admins" ON public.allowed_admins
+  FOR ALL
+  TO authenticated
+  USING (public.get_current_user_role() = 'superadmin')
+  WITH CHECK (public.get_current_user_role() = 'superadmin');
+
+-- 10.2 profiles policies
+DROP POLICY IF EXISTS "Superadmins can do everything on profiles" ON public.profiles;
+CREATE POLICY "Superadmins can do everything on profiles" ON public.profiles
+  FOR ALL
+  TO authenticated
+  USING (public.get_current_user_role() = 'superadmin')
+  WITH CHECK (public.get_current_user_role() = 'superadmin');
+
+-- 10.3 stores policies
+DROP POLICY IF EXISTS "Superadmins can do everything on stores" ON public.stores;
+CREATE POLICY "Superadmins can do everything on stores" ON public.stores
+  FOR ALL
+  TO authenticated
+  USING (public.get_current_user_role() = 'superadmin')
+  WITH CHECK (public.get_current_user_role() = 'superadmin');
+
+
 

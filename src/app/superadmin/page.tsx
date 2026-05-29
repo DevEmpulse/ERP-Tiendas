@@ -16,7 +16,7 @@ export default function SuperAdminPage() {
   const supabase = createClient()
   const [profile, setProfile] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [allowedAdmins, setAllowedAdmins] = useState<any[]>([])
+  const [authorizedUsers, setAuthorizedUsers] = useState<any[]>([])
   const [actionLoading, setActionLoading] = useState(false)
   const [revokeLoadingId, setRevokeLoadingId] = useState<string | null>(null)
   
@@ -50,7 +50,7 @@ export default function SuperAdminPage() {
         }
 
         setProfile(profileData)
-        await loadAllowedAdmins()
+        await loadAuthorizedUsers()
       } catch (err) {
         console.error('Error verifying superadmin status:', err)
         router.push('/login')
@@ -62,18 +62,59 @@ export default function SuperAdminPage() {
     checkSuperAdmin()
   }, [router, supabase])
 
-  // Load whitelisted admins awaiting registration
-  async function loadAllowedAdmins() {
+  // Load whitelisted admins awaiting registration & registered active store admins
+  async function loadAuthorizedUsers() {
     try {
-      const { data, error } = await supabase
+      // 1. Fetch pending invitations
+      const { data: pendingData, error: pendingError } = await supabase
         .from('allowed_admins')
         .select('*')
         .order('created_at', { ascending: false })
 
-      if (error) throw error
-      setAllowedAdmins(data || [])
+      if (pendingError) throw pendingError
+
+      // 2. Fetch active store admins
+      const { data: activeProfiles, error: activeError } = await supabase
+        .from('profiles')
+        .select(`
+          id,
+          email,
+          store_id,
+          stores (
+            id,
+            name
+          )
+        `)
+        .eq('role', 'admin')
+
+      if (activeError) throw activeError
+
+      // Map pending whitelists
+      const pendingList = (pendingData || []).map((p: any) => ({
+        id: p.id,
+        email: p.email,
+        store_name: p.store_name,
+        status: 'pending',
+        store_id: null,
+        created_at: p.created_at
+      }))
+
+      // Map active stores (excluding the superadmin's store if it has role admin, but role is superadmin anyway)
+      const activeList = (activeProfiles || [])
+        .filter((ap: any) => ap.email !== profile?.email && ap.stores) // Ensure they have a valid store
+        .map((ap: any) => ({
+          id: ap.id,
+          email: ap.email,
+          store_name: ap.stores.name,
+          status: 'active',
+          store_id: ap.stores.id,
+          created_at: null // Active doesn't strictly need a creation timestamp here
+        }))
+
+      // Combine both lists (pending first, then active)
+      setAuthorizedUsers([...pendingList, ...activeList])
     } catch (err) {
-      console.error('Error loading whitelisted admins:', err)
+      console.error('Error loading whitelisted and active admins:', err)
       showFeedback('error', 'Error al cargar los accesos autorizados.')
     }
   }
@@ -100,11 +141,20 @@ export default function SuperAdminPage() {
       return
     }
 
+    const cleanedEmail = email.trim().toLowerCase()
+    const cleanedStoreName = storeName.trim()
+
+    // Check if email is already in the list
+    const alreadyAuthorized = authorizedUsers.some(
+      (u) => u.email.toLowerCase() === cleanedEmail
+    )
+    if (alreadyAuthorized) {
+      showFeedback('error', 'Este correo electrónico ya cuenta con acceso habilitado (activo o pendiente).')
+      return
+    }
+
     setActionLoading(true)
     try {
-      const cleanedEmail = email.trim().toLowerCase()
-      const cleanedStoreName = storeName.trim()
-
       const { error } = await supabase
         .from('allowed_admins')
         .insert({
@@ -122,7 +172,7 @@ export default function SuperAdminPage() {
       showFeedback('success', `Autorización registrada con éxito para ${cleanedEmail}.`)
       setEmail('')
       setStoreName('')
-      await loadAllowedAdmins()
+      await loadAuthorizedUsers()
     } catch (err: any) {
       console.error('Error inserting allowed admin:', err)
       showFeedback('error', err.message || 'Ocurrió un error al autorizar el acceso.')
@@ -131,26 +181,45 @@ export default function SuperAdminPage() {
     }
   }
 
-  // Handle Revoke (Delete authorization row)
-  const handleRevoke = async (id: string, emailStr: string) => {
-    if (!confirm(`¿Estás seguro de que deseas revocar el acceso autorizado para ${emailStr}?`)) {
+  // Handle Revoke or Delete Store
+  const handleRevoke = async (id: string, emailStr: string, status: string, storeId: string | null) => {
+    const isPending = status === 'pending'
+    const confirmationMessage = isPending
+      ? `¿Estás seguro de que deseas revocar el acceso autorizado para ${emailStr}?`
+      : `¿Estás seguro de que deseas ELIMINAR la tienda de ${emailStr}? Esta acción borrará todas sus ventas, empleados e información de forma permanente.`
+
+    if (!confirm(confirmationMessage)) {
       return
     }
 
     setRevokeLoadingId(id)
     try {
-      const { error } = await supabase
-        .from('allowed_admins')
-        .delete()
-        .eq('id', id)
+      if (isPending) {
+        // Delete pending invitation from allowed_admins
+        const { error } = await supabase
+          .from('allowed_admins')
+          .delete()
+          .eq('id', id)
 
-      if (error) throw error
+        if (error) throw error
+        showFeedback('success', `Acceso revocado para ${emailStr}.`)
+      } else {
+        // Delete active store from stores table (cascades to profiles, sales, clients)
+        if (!storeId) throw new Error('Identificador de la tienda faltante.')
+        
+        const { error } = await supabase
+          .from('stores')
+          .delete()
+          .eq('id', storeId)
 
-      showFeedback('success', `Acceso revocado para ${emailStr}.`)
-      await loadAllowedAdmins()
-    } catch (err) {
-      console.error('Error deleting allowed admin:', err)
-      showFeedback('error', 'Error al revocar el acceso autorizado.')
+        if (error) throw error
+        showFeedback('success', `Tienda y perfiles de ${emailStr} eliminados permanentemente.`)
+      }
+      
+      await loadAuthorizedUsers()
+    } catch (err: any) {
+      console.error('Error revoking/deleting:', err)
+      showFeedback('error', err.message || 'Error al procesar la solicitud.')
     } finally {
       setRevokeLoadingId(null)
     }
@@ -332,10 +401,10 @@ export default function SuperAdminPage() {
               <CardHeader className="border-b border-zinc-250/20 dark:border-zinc-800/40 pb-4">
                 <CardTitle className="text-sm sm:text-base font-bold flex items-center gap-2">
                   <ShieldAlert className="h-4.5 w-4.5 text-zinc-500" />
-                  Accesos Autorizados Pendientes
+                  Accesos y Tiendas Habilitadas
                 </CardTitle>
                 <CardDescription className="text-xs">
-                  Lista de correos autorizados para registrarse. Una vez completado su registro de Google OAuth, la tienda se creará y desaparecerán de esta lista.
+                  Lista de accesos habilitados en el sistema, mostrando tanto invitaciones pendientes de registro como tiendas activas creadas.
                 </CardDescription>
               </CardHeader>
 
@@ -344,7 +413,7 @@ export default function SuperAdminPage() {
                   <Table>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent border-zinc-100 dark:border-zinc-800">
-                        <TableHead className="text-xs font-semibold py-3 px-4">Correo Autorizado</TableHead>
+                        <TableHead className="text-xs font-semibold py-3 px-4">Correo Habilitado</TableHead>
                         <TableHead className="text-xs font-semibold py-3 px-4">Tienda Asignada</TableHead>
                         <TableHead className="text-xs font-semibold py-3 px-4 text-center">Estado</TableHead>
                         <TableHead className="text-xs font-semibold py-3 px-4 text-right">Acción</TableHead>
@@ -352,39 +421,45 @@ export default function SuperAdminPage() {
                     </TableHeader>
                     
                     <TableBody>
-                      {allowedAdmins.length === 0 ? (
+                      {authorizedUsers.length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={4} className="text-center py-10 text-zinc-400 dark:text-zinc-500 text-xs">
-                            No hay registros pendientes de registro.
+                            No hay accesos ni tiendas registradas en el sistema.
                           </TableCell>
                         </TableRow>
                       ) : (
-                        allowedAdmins.map((admin) => (
+                        authorizedUsers.map((user) => (
                           <TableRow 
-                            key={admin.id} 
+                            key={user.status + '-' + user.id} 
                             className="hover:bg-zinc-900/2 border-zinc-100 dark:border-zinc-800/60 transition-colors"
                           >
                             <TableCell className="py-3 px-4 font-medium max-w-[200px] truncate text-xs sm:text-sm">
-                              {admin.email}
+                              {user.email}
                             </TableCell>
                             <TableCell className="py-3 px-4 text-xs sm:text-sm text-zinc-650 dark:text-zinc-350">
-                              {admin.store_name}
+                              {user.store_name}
                             </TableCell>
                             <TableCell className="py-3 px-4 text-center">
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                                Esperando registro
-                              </span>
+                              {user.status === 'pending' ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                  Esperando registro
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                  Activo
+                                </span>
+                              )}
                             </TableCell>
                             <TableCell className="py-3 px-4 text-right">
                               <Button
-                                onClick={() => handleRevoke(admin.id, admin.email)}
+                                onClick={() => handleRevoke(user.id, user.email, user.status, user.store_id)}
                                 variant="outline"
                                 size="xs"
                                 className="h-8 w-8 p-0 rounded-lg border-zinc-200 hover:text-red-650 hover:bg-red-50 dark:border-zinc-850 dark:text-zinc-400 dark:hover:text-red-400 dark:hover:bg-red-950/20 cursor-pointer"
-                                disabled={revokeLoadingId === admin.id}
-                                title="Revocar Acceso"
+                                disabled={revokeLoadingId === user.id}
+                                title={user.status === 'pending' ? 'Revocar Acceso' : 'Eliminar Tienda'}
                               >
-                                {revokeLoadingId === admin.id ? (
+                                {revokeLoadingId === user.id ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
                                   <Trash2 className="h-3.5 w-3.5" />

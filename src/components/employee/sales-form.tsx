@@ -6,8 +6,15 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Coins, ArrowLeftRight, CreditCard, Phone, Loader2, CheckCircle2, AlertCircle, User } from 'lucide-react'
+import { Coins, ArrowLeftRight, CreditCard, Phone, Loader2, CheckCircle2, AlertCircle, User, Package } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
+interface ProductItem {
+  id: string
+  quantity: string
+  detail: string
+  unitPrice: string
+}
 
 interface SalesFormProps {
   profile: {
@@ -19,10 +26,12 @@ interface SalesFormProps {
 }
 
 export default function SalesForm({ profile }: SalesFormProps) {
-  const [description, setDescription] = useState('')
-  
+  // Product list state
+  const [products, setProducts] = useState<ProductItem[]>([
+    { id: '1', quantity: '1', detail: '', unitPrice: '' }
+  ])
+
   // Single payment states
-  const [amount, setAmount] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'transfer' | 'card'>('cash')
   
   // Combined payment states
@@ -49,9 +58,8 @@ export default function SalesForm({ profile }: SalesFormProps) {
   const combinedTotal = cashNum + transferNum + cardNum
 
   // Format currency helper (CLP standard representation, e.g. $15.000)
-  const formatCurrency = (value: string) => {
-    if (!value) return ''
-    const num = parseInt(value, 10)
+  const formatCurrency = (value: string | number) => {
+    const num = typeof value === 'number' ? value : parseInt(value, 10)
     if (isNaN(num)) return ''
     return new Intl.NumberFormat('es-CL', {
       style: 'currency',
@@ -60,10 +68,45 @@ export default function SalesForm({ profile }: SalesFormProps) {
     }).format(num)
   }
 
-  const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Only allow digits to open numeric keyboard seamlessly
-    const cleanValue = e.target.value.replace(/\D/g, '')
-    setAmount(cleanValue)
+  // Get subtotal for a specific product item
+  const getProductSubtotal = (p: ProductItem) => {
+    const q = parseInt(p.quantity || '0', 10)
+    const price = parseInt(p.unitPrice || '0', 10)
+    return q * price
+  }
+
+  // Get total sum of all products
+  const productsTotal = products.reduce((acc, p) => acc + getProductSubtotal(p), 0)
+
+  // Product management actions
+  const addProductRow = () => {
+    setProducts(prev => [
+      ...prev,
+      { id: Math.random().toString(), quantity: '1', detail: '', unitPrice: '' }
+    ])
+  }
+
+  const removeProductRow = (id: string) => {
+    if (products.length === 1) return
+    setProducts(prev => prev.filter(p => p.id !== id))
+  }
+
+  const updateProductField = (id: string, field: keyof ProductItem, value: string) => {
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== id) return p
+        
+        let cleanValue = value
+        if (field === 'quantity' || field === 'unitPrice') {
+          cleanValue = value.replace(/\D/g, '')
+        }
+        
+        return {
+          ...p,
+          [field]: cleanValue
+        }
+      })
+    )
   }
 
   const handleSplitAmountChange = (method: 'cash' | 'transfer' | 'card', value: string) => {
@@ -77,20 +120,22 @@ export default function SalesForm({ profile }: SalesFormProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    // Validations
-    if (!description.trim()) {
-      showToast('Por favor, ingresa una descripción.', 'error')
+    // Filter out rows without product description details
+    const validProducts = products.filter(p => p.detail.trim() !== '')
+
+    if (validProducts.length === 0) {
+      showToast('Por favor, ingresa al menos un producto con descripción.', 'error')
+      return
+    }
+
+    if (productsTotal <= 0) {
+      showToast('El total de la venta debe ser mayor a 0.', 'error')
       return
     }
 
     if (isCombined) {
-      if (combinedTotal <= 0) {
-        showToast('Por favor, ingresa montos en al menos un método de pago.', 'error')
-        return
-      }
-    } else {
-      if (!amount || parseInt(amount, 10) <= 0) {
-        showToast('Por favor, ingresa un monto válido.', 'error')
+      if (combinedTotal !== productsTotal) {
+        showToast(`La suma de los pagos (${formatCurrency(combinedTotal)}) debe coincidir con el total de la venta (${formatCurrency(productsTotal)}).`, 'error')
         return
       }
     }
@@ -167,7 +212,17 @@ export default function SalesForm({ profile }: SalesFormProps) {
         }
       }
 
-      // 2. Insert Sale(s)
+      // 3. Compile transaction description: e.g. "1x remera ($15.000), 2x gorra ($5.000)"
+      const compiledDesc = validProducts
+        .map(p => {
+          const qty = p.quantity || '1'
+          const detail = p.detail.trim()
+          const price = formatCurrency(p.unitPrice || '0')
+          return `${qty}x ${detail} (${price})`
+        })
+        .join(', ')
+
+      // 4. Insert Sale(s)
       if (isCombined) {
         // Generate a 4-character transaction identifier (e.g. #A4F9)
         const txnRef = Math.random().toString(36).substring(2, 6).toUpperCase()
@@ -177,7 +232,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
           salesToInsert.push({
             store_id: storeId,
             employee_id: employeeId,
-            description: `${description.trim()} (Efectivo - Ref: #${txnRef})`,
+            description: `${compiledDesc} (Efectivo - Ref: #${txnRef})`,
             payment_method: 'cash',
             total_amount: cashNum,
             client_id: clientId
@@ -188,7 +243,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
           salesToInsert.push({
             store_id: storeId,
             employee_id: employeeId,
-            description: `${description.trim()} (Transferencia - Ref: #${txnRef})`,
+            description: `${compiledDesc} (Transferencia - Ref: #${txnRef})`,
             payment_method: 'transfer',
             total_amount: transferNum,
             client_id: clientId
@@ -199,7 +254,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
           salesToInsert.push({
             store_id: storeId,
             employee_id: employeeId,
-            description: `${description.trim()} (Tarjeta - Ref: #${txnRef})`,
+            description: `${compiledDesc} (Tarjeta - Ref: #${txnRef})`,
             payment_method: 'card',
             total_amount: cardNum,
             client_id: clientId
@@ -219,9 +274,9 @@ export default function SalesForm({ profile }: SalesFormProps) {
           .insert({
             store_id: storeId,
             employee_id: employeeId,
-            description: description.trim(),
+            description: compiledDesc,
             payment_method: paymentMethod,
-            total_amount: parseFloat(amount),
+            total_amount: productsTotal,
             client_id: clientId
           })
 
@@ -232,8 +287,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
       showToast('¡Venta registrada con éxito!', 'success')
       
       // Clean form fields
-      setDescription('')
-      setAmount('')
+      setProducts([{ id: '1', quantity: '1', detail: '', unitPrice: '' }])
       setPaymentMethod('cash')
       setSplitAmounts({ cash: '', transfer: '', card: '' })
       setClientName('')
@@ -284,34 +338,107 @@ export default function SalesForm({ profile }: SalesFormProps) {
             Registrar Nueva Venta 💸
           </CardTitle>
           <CardDescription className="text-zinc-500 dark:text-zinc-400">
-            Ingresa los detalles del servicio o producto vendido.
+            Ingresa los productos o servicios de esta transacción.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Description */}
-            <div className="space-y-2">
-              <Label htmlFor="description" className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                Descripción
-              </Label>
-              <textarea
-                id="description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Ej. Corte de pelo + degradado"
-                rows={2}
+          <form onSubmit={handleSubmit} className="space-y-6">
+            
+            {/* Products List Section */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between pb-1">
+                <Label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 flex items-center gap-1.5">
+                  <Package className="h-4 w-4 text-zinc-400 shrink-0" />
+                  <span>Productos / Servicios</span>
+                </Label>
+                <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-full select-none">
+                  {products.length} {products.length === 1 ? 'Ítem' : 'Ítems'}
+                </span>
+              </div>
+
+              {/* Grid Column Titles */}
+              <div className="flex items-center gap-2 mb-1 px-1 select-none">
+                <span className="w-11 text-center text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase">Cant</span>
+                <span className="flex-1 text-left text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase pl-1">Detalle</span>
+                <span className="w-20 text-center text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase">P. Unit</span>
+                <span className="w-22 text-center text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase">Importe</span>
+                <span className="w-9"></span> {/* Spacer for remove button */}
+              </div>
+
+              {/* Product Rows */}
+              <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                {products.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2 animate-in fade-in duration-150">
+                    {/* CANT Input */}
+                    <Input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={p.quantity}
+                      onChange={(e) => updateProductField(p.id, 'quantity', e.target.value)}
+                      placeholder="1"
+                      disabled={loading}
+                      className="w-11 text-center h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 p-0 text-sm font-bold focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300"
+                    />
+
+                    {/* DETALLE Input */}
+                    <Input
+                      type="text"
+                      value={p.detail}
+                      onChange={(e) => updateProductField(p.id, 'detail', e.target.value)}
+                      placeholder="remera"
+                      disabled={loading}
+                      className="flex-1 h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 px-3 text-sm focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300"
+                    />
+
+                    {/* P. UNIT Input */}
+                    <Input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={p.unitPrice}
+                      onChange={(e) => updateProductField(p.id, 'unitPrice', e.target.value)}
+                      placeholder="0"
+                      disabled={loading}
+                      className="w-20 text-center h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 p-0 text-sm font-bold focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300"
+                    />
+
+                    {/* IMPORTE Box (ReadOnly Calculated) */}
+                    <div className="w-22 h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/30 flex items-center justify-center text-xs font-bold text-zinc-700 dark:text-zinc-300 select-none overflow-hidden text-ellipsis whitespace-nowrap">
+                      {formatCurrency(getProductSubtotal(p)) || '$0'}
+                    </div>
+
+                    {/* Remove Action Button */}
+                    <button
+                      type="button"
+                      onClick={() => removeProductRow(p.id)}
+                      disabled={products.length === 1 || loading}
+                      className="w-9 h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 text-zinc-500 hover:text-red-500 dark:text-zinc-400 dark:hover:text-red-400 flex items-center justify-center cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:pointer-events-none active:scale-95 text-lg font-bold select-none"
+                    >
+                      -
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add Product Button */}
+              <button
+                type="button"
+                onClick={addProductRow}
                 disabled={loading}
-                className="w-full min-h-[70px] rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/50 px-3 py-2 text-sm ring-offset-background placeholder:text-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300 disabled:cursor-not-allowed disabled:opacity-50 resize-none transition-all duration-200"
-              />
+                className="flex items-center gap-1.5 text-xs font-bold text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 mt-2.5 transition-colors duration-200 cursor-pointer self-start pl-1 select-none"
+              >
+                <span>+</span> Agregar producto
+              </button>
             </div>
 
             {/* Combined Payment Toggle */}
             <div className="flex items-center justify-between p-3 bg-zinc-50/50 dark:bg-zinc-950/30 rounded-xl border border-zinc-200/50 dark:border-zinc-800/30">
               <div className="space-y-0.5">
-                <Label htmlFor="combined-payment" className="text-sm font-bold text-zinc-800 dark:text-zinc-200 cursor-pointer">
+                <Label htmlFor="combined-payment" className="text-sm font-bold text-zinc-800 dark:text-zinc-200 cursor-pointer select-none">
                   Pago Combinado 🔀
                 </Label>
-                <p className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">
+                <p className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium select-none">
                   Dividir la venta en múltiples métodos de pago.
                 </p>
               </div>
@@ -338,6 +465,11 @@ export default function SalesForm({ profile }: SalesFormProps) {
             {isCombined ? (
               /* Combined Payment Form Section */
               <div className="space-y-3.5 p-4 bg-zinc-50/20 dark:bg-zinc-950/10 rounded-xl border border-zinc-200/50 dark:border-zinc-800/20 animate-in fade-in duration-200">
+                <div className="flex justify-between items-center text-xs font-extrabold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider select-none pb-1 border-b border-zinc-200/40 dark:border-zinc-800/40">
+                  <span>Desglose de Pago</span>
+                  <span className="text-zinc-700 dark:text-zinc-300">Total Venta: {formatCurrency(productsTotal)}</span>
+                </div>
+
                 {/* Cash Amount */}
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
@@ -360,7 +492,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
                       onChange={(e) => handleSplitAmountChange('cash', e.target.value)}
                       placeholder="0"
                       disabled={loading}
-                      className="pl-7 h-10 text-sm font-bold rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:border-emerald-500 dark:focus-visible:ring-emerald-400 dark:focus-visible:ring-emerald-400 transition-all duration-200"
+                      className="pl-7 h-10 text-sm font-bold rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:border-emerald-500 dark:focus-visible:ring-emerald-400 dark:focus-visible:border-emerald-400 transition-all duration-200"
                     />
                   </div>
                 </div>
@@ -419,50 +551,51 @@ export default function SalesForm({ profile }: SalesFormProps) {
                   </div>
                 </div>
 
-                {/* Combined Sum Display */}
-                <div className="pt-3.5 border-t border-zinc-200 dark:border-zinc-800 flex justify-between items-center">
-                  <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">Total Sumado:</span>
-                  <span className="text-xl font-extrabold text-zinc-900 dark:text-zinc-50">
-                    {combinedTotal > 0 ? formatCurrency(combinedTotal.toString()) : '$0'}
-                  </span>
+                {/* Combined Sum Display & Warning */}
+                <div className="pt-3.5 border-t border-zinc-200/40 dark:border-zinc-800/40 space-y-2">
+                  <div className="flex justify-between items-center select-none">
+                    <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">Total Sumado:</span>
+                    <span className={cn(
+                      "text-xl font-extrabold transition-colors duration-200",
+                      combinedTotal === productsTotal 
+                        ? "text-emerald-600 dark:text-emerald-400" 
+                        : "text-amber-500 dark:text-amber-400"
+                    )}>
+                      {formatCurrency(combinedTotal)}
+                    </span>
+                  </div>
+
+                  {combinedTotal !== productsTotal && (
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/5 p-2.5 rounded-xl border border-amber-500/20 animate-in slide-in-from-top-1 duration-150 select-none">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
+                      <span>
+                        {combinedTotal < productsTotal 
+                          ? `Faltan registrar ${formatCurrency(productsTotal - combinedTotal)}` 
+                          : `Sobra un excedente de ${formatCurrency(combinedTotal - productsTotal)}`}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
               /* Single Payment Form Section */
               <div className="space-y-4 animate-in fade-in duration-200">
-                {/* Single Amount Input */}
-                <div className="space-y-2">
-                  <Label htmlFor="amount" className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                    Monto ($)
-                  </Label>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-zinc-400 dark:text-zinc-500">$</span>
-                    <Input
-                      id="amount"
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={amount}
-                      onChange={handleAmountChange}
-                      placeholder="0"
-                      disabled={loading}
-                      className="pl-8 text-3xl font-extrabold tracking-tight h-14 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/50 focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300 transition-all duration-200"
-                    />
+                {/* Total amount visual display instead of user amount input */}
+                <div className="p-4 bg-zinc-50/50 dark:bg-zinc-950/30 rounded-2xl border border-zinc-200/50 dark:border-zinc-800/30 flex justify-between items-center select-none">
+                  <div className="space-y-0.5">
+                    <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Total a Cobrar</span>
+                    <p className="text-3xl font-extrabold text-zinc-900 dark:text-zinc-50">
+                      {formatCurrency(productsTotal) || '$0'}
+                    </p>
                   </div>
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 font-medium min-h-[1.25rem]">
-                    {amount ? (
-                      <span className="text-emerald-600 dark:text-emerald-400 font-semibold animate-pulse">
-                        Monto formateado: {formatCurrency(amount)}
-                      </span>
-                    ) : (
-                      "El teclado se abrirá solo en números."
-                    )}
-                  </p>
+                  <div className="h-10 w-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-lg">
+                    $
+                  </div>
                 </div>
 
                 {/* Single Payment Method Buttons */}
                 <div className="space-y-2">
-                  <Label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                  <Label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 select-none">
                     Método de Pago
                   </Label>
                   <div className="flex gap-2">
@@ -576,7 +709,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
             {/* Submit Button */}
             <Button
               type="submit"
-              disabled={loading}
+              disabled={loading || (isCombined && combinedTotal !== productsTotal)}
               className="w-full h-12 rounded-xl text-sm font-bold bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer shadow-md hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none transition-all duration-200 flex items-center justify-center gap-2 mt-4"
             >
               {loading ? (

@@ -9,6 +9,7 @@ import { HistoryView } from '@/components/admin/HistoryView'
 import { EmployeesView } from '@/components/admin/EmployeesView'
 import { StaffManagementView } from '@/components/admin/StaffManagementView'
 import { ClientManager } from '@/components/admin/ClientManager'
+import { StockView } from '@/components/admin/StockView'
 import { Button } from '@/components/ui/button'
 import { groupSales } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -340,6 +341,8 @@ export default function AdminPage() {
         return <ClientManager storeId={userProfile?.store_id || null} />
       case 'staff':
         return <StaffManagementView storeId={userProfile?.store_id || null} />
+      case 'stock':
+        return <StockView storeId={userProfile?.store_id || null} />
       default:
         return (
           <div className="py-8 text-center text-sm text-zinc-400">

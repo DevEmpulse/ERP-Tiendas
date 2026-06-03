@@ -15,15 +15,24 @@ import {
 } from '@/components/ui/dialog'
 import {
   Coins, ArrowLeftRight, CreditCard, Phone, Loader2,
-  ShieldAlert, CheckCircle2, Plus, Trash2, Package, User
+  ShieldAlert, CheckCircle2, Plus, Trash2, Package, User, Tags
 } from 'lucide-react'
 import { GroupedSale } from '@/lib/salesHelper'
+import { cn } from '@/lib/utils'
 
 interface Profile {
   id: string
   name: string | null
   email: string | null
   role: string | null
+}
+
+interface PriceRule {
+  id: string
+  product_name: string
+  quantity: number
+  special_price: number
+  unit_price: number
 }
 
 interface SaleModalProps {
@@ -42,6 +51,7 @@ interface ProductLine {
   detalle: string
   p_unit: number
   importe: number
+  importeManual: boolean // true when user overrode importe directly
 }
 
 const emptyLine = (): ProductLine => ({
@@ -50,6 +60,7 @@ const emptyLine = (): ProductLine => ({
   detalle: '',
   p_unit: 0,
   importe: 0,
+  importeManual: false,
 })
 
 // Parse the stored JSON description into product lines, falling back gracefully
@@ -68,6 +79,7 @@ const parseDescription = (raw: string): { lines: ProductLine[]; notes: string } 
           detalle: String(item.detalle ?? item.descripcion ?? ''),
           p_unit: Number(item.p_unit ?? item.precio_unitario ?? 0),
           importe: Number(item.importe ?? item.total ?? 0),
+          importeManual: false,
         }))
         return { lines, notes: '' }
       }
@@ -78,7 +90,7 @@ const parseDescription = (raw: string): { lines: ProductLine[]; notes: string } 
 
   // Plain text — put it in a single detalle field
   return {
-    lines: [{ id: Math.random().toString(36).slice(2), cant: 1, detalle: trimmed, p_unit: 0, importe: 0 }],
+    lines: [{ id: Math.random().toString(36).slice(2), cant: 1, detalle: trimmed, p_unit: 0, importe: 0, importeManual: false }],
     notes: '',
   }
 }
@@ -104,6 +116,9 @@ export function SaleModal({
   // Form states
   const [employeeId, setEmployeeId] = useState('')
   const [lines, setLines] = useState<ProductLine[]>([emptyLine()])
+
+  // Price rules
+  const [priceRules, setPriceRules] = useState<PriceRule[]>([])
 
   // Single payment states
   const [amount, setAmount] = useState('')
@@ -131,6 +146,22 @@ export function SaleModal({
     parseInt(splitAmounts.cash || '0', 10) +
     parseInt(splitAmounts.transfer || '0', 10) +
     parseInt(splitAmounts.card || '0', 10)
+
+  // Load price rules when modal opens
+  useEffect(() => {
+    if (!isOpen || !storeId) return
+    supabase
+      .from('product_price_rules')
+      .select('id, product_name, quantity, special_price, unit_price')
+      .then(({ data }) => {
+        if (data) setPriceRules(data.map((r: any) => ({
+          ...r,
+          quantity: Number(r.quantity),
+          special_price: Number(r.special_price),
+          unit_price: Number(r.unit_price),
+        })))
+      })
+  }, [isOpen, storeId])
 
   // Pre-fill form on open
   useEffect(() => {
@@ -183,19 +214,51 @@ export function SaleModal({
     }
   }, [isOpen, saleToEdit, employees])
 
-  // Update a single line field; auto-calc importe on cant/p_unit change
+  // Update a single line field; bidirectional recalc between cant/p_unit/importe
   const updateLine = useCallback((id: string, field: keyof ProductLine, raw: string | number) => {
     setLines(prev =>
       prev.map(l => {
         if (l.id !== id) return l
         const updated = { ...l, [field]: field === 'detalle' ? raw : Number(raw) || 0 }
+
         if (field === 'cant' || field === 'p_unit') {
+          // Standard recalc: importe = cant * p_unit, clear manual override
           updated.importe = updated.cant * updated.p_unit
+          updated.importeManual = false
+        } else if (field === 'importe') {
+          // User overrode importe directly: recalc p_unit = importe / cant
+          const imp = Number(raw) || 0
+          const qty = updated.cant || 1
+          updated.p_unit = Math.round(imp / qty)
+          updated.importeManual = true
         }
         return updated
       })
     )
   }, [])
+
+  // Apply a price rule suggestion
+  const applyPriceRule = (id: string, rule: PriceRule) => {
+    setLines(prev =>
+      prev.map(l =>
+        l.id !== id ? l : {
+          ...l,
+          p_unit: rule.unit_price,
+          importe: rule.special_price,
+          importeManual: true,
+        }
+      )
+    )
+  }
+
+  // Get matching price rule for a line
+  const getMatchingRule = (detalle: string, cant: number): PriceRule | null => {
+    if (!detalle.trim()) return null
+    const lower = detalle.trim().toLowerCase()
+    return priceRules.find(
+      r => r.product_name.toLowerCase() === lower && r.quantity === cant
+    ) || null
+  }
 
   const addLine = () => setLines(prev => [...prev, emptyLine()])
   const removeLine = (id: string) =>
@@ -373,55 +436,88 @@ export function SaleModal({
 
               {/* Product rows */}
               <div className="space-y-1.5">
-                {lines.map((line, idx) => (
-                  <div
-                    key={line.id}
-                    className="grid grid-cols-[36px_1fr_80px_80px_32px] gap-1.5 items-center group"
-                  >
-                    {/* Cant */}
-                    <Input
-                      type="text"
-                      inputMode="numeric"
-                      value={line.cant || ''}
-                      onChange={(e) => updateLine(line.id, 'cant', e.target.value.replace(/\D/g, ''))}
-                      disabled={loading}
-                      placeholder="1"
-                      className="h-9 text-center text-xs font-semibold rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 px-1"
-                    />
-                    {/* Detalle */}
-                    <Input
-                      type="text"
-                      value={line.detalle}
-                      onChange={(e) => updateLine(line.id, 'detalle', e.target.value)}
-                      disabled={loading}
-                      placeholder={`Producto ${idx + 1}`}
-                      className="h-9 text-xs rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50"
-                    />
-                    {/* P. Unit */}
-                    <Input
-                      type="text"
-                      inputMode="numeric"
-                      value={line.p_unit || ''}
-                      onChange={(e) => updateLine(line.id, 'p_unit', e.target.value.replace(/\D/g, ''))}
-                      disabled={loading}
-                      placeholder="0"
-                      className="h-9 text-right text-xs rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 px-2"
-                    />
-                    {/* Importe (read-only computed) */}
-                    <div className="h-9 rounded-lg bg-zinc-100/80 dark:bg-zinc-800 border border-zinc-200/60 dark:border-zinc-700/40 flex items-center justify-end px-2 text-xs font-semibold text-zinc-700 dark:text-zinc-200 tabular-nums">
-                      {line.importe > 0 ? `$${line.importe.toLocaleString('es-CL')}` : '—'}
+                {lines.map((line, idx) => {
+                  const matchingRule = getMatchingRule(line.detalle, line.cant)
+                  return (
+                    <div key={line.id} className="space-y-1">
+                      <div
+                        className="grid grid-cols-[36px_1fr_80px_80px_32px] gap-1.5 items-center group"
+                      >
+                        {/* Cant */}
+                        <Input
+                          type="text"
+                          inputMode="numeric"
+                          value={line.cant || ''}
+                          onChange={(e) => updateLine(line.id, 'cant', e.target.value.replace(/\D/g, ''))}
+                          disabled={loading}
+                          placeholder="1"
+                          className="h-9 text-center text-xs font-semibold rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 px-1"
+                        />
+                        {/* Detalle */}
+                        <Input
+                          type="text"
+                          value={line.detalle}
+                          onChange={(e) => updateLine(line.id, 'detalle', e.target.value)}
+                          disabled={loading}
+                          placeholder={`Producto ${idx + 1}`}
+                          className="h-9 text-xs rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50"
+                        />
+                        {/* P. Unit */}
+                        <Input
+                          type="text"
+                          inputMode="numeric"
+                          value={line.p_unit || ''}
+                          onChange={(e) => updateLine(line.id, 'p_unit', e.target.value.replace(/\D/g, ''))}
+                          disabled={loading}
+                          placeholder="0"
+                          className="h-9 text-right text-xs rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 px-2"
+                        />
+                        {/* Importe — now editable */}
+                        <div className="relative">
+                          <Input
+                            type="text"
+                            inputMode="numeric"
+                            value={line.importe || ''}
+                            onChange={(e) => updateLine(line.id, 'importe', e.target.value.replace(/\D/g, ''))}
+                            disabled={loading}
+                            placeholder="0"
+                            className={cn(
+                              "h-9 text-right text-xs rounded-lg px-2 transition-colors duration-200",
+                              line.importeManual
+                                ? "border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 font-bold"
+                                : "border-zinc-200 dark:border-zinc-700 bg-zinc-100/80 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 font-semibold"
+                            )}
+                          />
+                          {line.importeManual && (
+                            <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-white dark:ring-zinc-900" />
+                          )}
+                        </div>
+                        {/* Remove */}
+                        <button
+                          type="button"
+                          onClick={() => removeLine(line.id)}
+                          disabled={loading || lines.length === 1}
+                          className="h-9 w-8 flex items-center justify-center rounded-lg text-zinc-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all disabled:opacity-0 cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+
+                      {/* Price rule suggestion */}
+                      {matchingRule && !line.importeManual && (
+                        <button
+                          type="button"
+                          onClick={() => applyPriceRule(line.id, matchingRule)}
+                          disabled={loading}
+                          className="ml-10 flex items-center gap-1.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 px-2 py-1 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors cursor-pointer select-none animate-in fade-in duration-150"
+                        >
+                          <Tags className="h-3 w-3 shrink-0" />
+                          💡 ×{matchingRule.quantity}: ${matchingRule.special_price.toLocaleString('es-CL')} — Aplicar
+                        </button>
+                      )}
                     </div>
-                    {/* Remove */}
-                    <button
-                      type="button"
-                      onClick={() => removeLine(line.id)}
-                      disabled={loading || lines.length === 1}
-                      className="h-9 w-8 flex items-center justify-center rounded-lg text-zinc-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all disabled:opacity-0 cursor-pointer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
 
               {/* Add line + subtotal */}

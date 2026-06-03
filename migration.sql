@@ -417,4 +417,21 @@ CREATE POLICY "Superadmins can do everything on stores" ON public.stores
   WITH CHECK (public.get_current_user_role() = 'superadmin');
 
 
+-- 11. Product Price Rules (Stock) — Reglas de precio especial por cantidad
+CREATE TABLE IF NOT EXISTS public.product_price_rules (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id uuid REFERENCES public.stores(id) ON DELETE CASCADE NOT NULL,
+  product_name text NOT NULL,           -- nombre del producto (ej: "Remera")
+  quantity int NOT NULL,                -- cantidad especial (ej: 12 para docena)
+  special_price numeric(10,2) NOT NULL, -- precio total para esa cantidad (ej: 50000)
+  unit_price numeric(10,2) NOT NULL,    -- precio unitario normal (ej: 5000)
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 
+ALTER TABLE public.product_price_rules ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage price rules in their store" ON public.product_price_rules;
+CREATE POLICY "Users can manage price rules in their store" ON public.product_price_rules
+  FOR ALL TO authenticated
+  USING (store_id = public.get_current_user_store_id())
+  WITH CHECK (store_id = public.get_current_user_store_id());

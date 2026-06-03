@@ -1,19 +1,29 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Coins, ArrowLeftRight, CreditCard, Phone, Loader2, CheckCircle2, AlertCircle, User, Package } from 'lucide-react'
+import { Coins, ArrowLeftRight, CreditCard, Phone, Loader2, CheckCircle2, AlertCircle, User, Package, Tags } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
+interface PriceRule {
+  id: string
+  product_name: string
+  quantity: number
+  special_price: number
+  unit_price: number
+}
 
 interface ProductItem {
   id: string
   quantity: string
   detail: string
   unitPrice: string
+  importe: string        // editable directly
+  importeManual: boolean // true when user manually edited importe
 }
 
 interface SalesFormProps {
@@ -28,8 +38,11 @@ interface SalesFormProps {
 export default function SalesForm({ profile }: SalesFormProps) {
   // Product list state
   const [products, setProducts] = useState<ProductItem[]>([
-    { id: '1', quantity: '1', detail: '', unitPrice: '' }
+    { id: '1', quantity: '1', detail: '', unitPrice: '', importe: '', importeManual: false }
   ])
+
+  // Price rules from store
+  const [priceRules, setPriceRules] = useState<PriceRule[]>([])
 
   // Single payment states
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'transfer' | 'card'>('cash')
@@ -68,21 +81,50 @@ export default function SalesForm({ profile }: SalesFormProps) {
     }).format(num)
   }
 
-  // Get subtotal for a specific product item
-  const getProductSubtotal = (p: ProductItem) => {
+  // Load price rules on mount
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from('product_price_rules')
+      .select('id, product_name, quantity, special_price, unit_price')
+      .then(({ data }) => {
+        if (data) setPriceRules(data.map((r: any) => ({
+          ...r,
+          quantity: Number(r.quantity),
+          special_price: Number(r.special_price),
+          unit_price: Number(r.unit_price),
+        })))
+      })
+  }, [profile.store_id])
+
+  // Get matching price rule for a product row
+  const getMatchingRule = (detail: string, quantity: string): PriceRule | null => {
+    if (!detail.trim()) return null
+    const qty = parseInt(quantity || '0', 10)
+    const lower = detail.trim().toLowerCase()
+    return priceRules.find(
+      r => r.product_name.toLowerCase() === lower && r.quantity === qty
+    ) || null
+  }
+
+  // Get computed importe for a product item
+  const getProductImporte = (p: ProductItem): number => {
+    if (p.importe !== '') {
+      return parseInt(p.importe || '0', 10)
+    }
     const q = parseInt(p.quantity || '0', 10)
     const price = parseInt(p.unitPrice || '0', 10)
     return q * price
   }
 
   // Get total sum of all products
-  const productsTotal = products.reduce((acc, p) => acc + getProductSubtotal(p), 0)
+  const productsTotal = products.reduce((acc, p) => acc + getProductImporte(p), 0)
 
   // Product management actions
   const addProductRow = () => {
     setProducts(prev => [
       ...prev,
-      { id: Math.random().toString(), quantity: '1', detail: '', unitPrice: '' }
+      { id: Math.random().toString(), quantity: '1', detail: '', unitPrice: '', importe: '', importeManual: false }
     ])
   }
 
@@ -95,15 +137,48 @@ export default function SalesForm({ profile }: SalesFormProps) {
     setProducts(prev =>
       prev.map(p => {
         if (p.id !== id) return p
-        
+
         let cleanValue = value
-        if (field === 'quantity' || field === 'unitPrice') {
+        if (field === 'quantity' || field === 'unitPrice' || field === 'importe') {
           cleanValue = value.replace(/\D/g, '')
         }
-        
+
+        const updated = { ...p, [field]: cleanValue }
+
+        if (field === 'quantity' || field === 'unitPrice') {
+          // Recalc importe from unitPrice × quantity (resets manual override)
+          const qty = parseInt(field === 'quantity' ? cleanValue : p.quantity || '0', 10)
+          const price = parseInt(field === 'unitPrice' ? cleanValue : p.unitPrice || '0', 10)
+          const calc = qty * price
+          updated.importe = calc > 0 ? calc.toString() : ''
+          updated.importeManual = false
+        }
+
+        if (field === 'importe') {
+          // When importe is edited directly, recalc unit price
+          const qty = parseInt(p.quantity || '1', 10)
+          const imp = parseInt(cleanValue || '0', 10)
+          if (qty > 0 && imp > 0) {
+            updated.unitPrice = Math.round(imp / qty).toString()
+          }
+          updated.importeManual = true
+        }
+
+        return updated
+      })
+    )
+  }
+
+  // Apply a price rule suggestion to a product row
+  const applyPriceRule = (id: string, rule: PriceRule) => {
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== id) return p
         return {
           ...p,
-          [field]: cleanValue
+          unitPrice: rule.unit_price.toString(),
+          importe: rule.special_price.toString(),
+          importeManual: true,
         }
       })
     )
@@ -287,7 +362,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
       showToast('¡Venta registrada con éxito!', 'success')
       
       // Clean form fields
-      setProducts([{ id: '1', quantity: '1', detail: '', unitPrice: '' }])
+      setProducts([{ id: '1', quantity: '1', detail: '', unitPrice: '', importe: '', importeManual: false }])
       setPaymentMethod('cash')
       setSplitAmounts({ cash: '', transfer: '', card: '' })
       setClientName('')
@@ -345,80 +420,172 @@ export default function SalesForm({ profile }: SalesFormProps) {
           <form onSubmit={handleSubmit} className="space-y-6">
             
             {/* Products List Section */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between pb-1">
+            <div className="space-y-3">
+              {/* Header */}
+              <div className="flex items-center justify-between">
                 <Label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 flex items-center gap-1.5">
                   <Package className="h-4 w-4 text-zinc-400 shrink-0" />
                   <span>Productos / Servicios</span>
                 </Label>
-                <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-full select-none">
-                  {products.length} {products.length === 1 ? 'Ítem' : 'Ítems'}
+                <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-2.5 py-1 rounded-full select-none tabular-nums">
+                  {products.length} {products.length === 1 ? 'ítem' : 'ítems'}
                 </span>
               </div>
 
-              {/* Grid Column Titles */}
-              <div className="flex items-center gap-2 mb-1 px-1 select-none">
-                <span className="w-11 text-center text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase">Cant</span>
-                <span className="flex-1 text-left text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase pl-1">Detalle</span>
-                <span className="w-20 text-center text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase">P. Unit</span>
-                <span className="w-22 text-center text-[10px] font-extrabold tracking-wider text-zinc-400 dark:text-zinc-500 uppercase">Importe</span>
-                <span className="w-9"></span> {/* Spacer for remove button */}
-              </div>
+              {/* Product Cards */}
+              <div className="space-y-2">
+                {products.map((p, idx) => {
+                  const matchingRule = getMatchingRule(p.detail, p.quantity)
+                  const displayImporte = p.importe !== ''
+                    ? p.importe
+                    : (() => {
+                        const q = parseInt(p.quantity || '0', 10)
+                        const u = parseInt(p.unitPrice || '0', 10)
+                        const calc = q * u
+                        return calc > 0 ? calc.toString() : ''
+                      })()
+                  const importeNum = parseInt(displayImporte || '0', 10)
+                  const unitPriceNum = parseInt(p.unitPrice || '0', 10)
 
-              {/* Product Rows */}
-              <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
-                {products.map((p) => (
-                  <div key={p.id} className="flex items-center gap-2 animate-in fade-in duration-150">
-                    {/* CANT Input */}
-                    <Input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={p.quantity}
-                      onChange={(e) => updateProductField(p.id, 'quantity', e.target.value)}
-                      placeholder="1"
-                      disabled={loading}
-                      className="w-11 text-center h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 p-0 text-sm font-bold focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300"
-                    />
-
-                    {/* DETALLE Input */}
-                    <Input
-                      type="text"
-                      value={p.detail}
-                      onChange={(e) => updateProductField(p.id, 'detail', e.target.value)}
-                      placeholder="remera"
-                      disabled={loading}
-                      className="flex-1 h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 px-3 text-sm focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300"
-                    />
-
-                    {/* P. UNIT Input */}
-                    <Input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={p.unitPrice}
-                      onChange={(e) => updateProductField(p.id, 'unitPrice', e.target.value)}
-                      placeholder="0"
-                      disabled={loading}
-                      className="w-20 text-center h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/40 dark:bg-zinc-950/40 p-0 text-sm font-bold focus-visible:ring-2 focus-visible:ring-zinc-950 dark:focus-visible:ring-zinc-300"
-                    />
-
-                    {/* IMPORTE Box (ReadOnly Calculated) */}
-                    <div className="w-22 h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/30 flex items-center justify-center text-xs font-bold text-zinc-700 dark:text-zinc-300 select-none overflow-hidden text-ellipsis whitespace-nowrap">
-                      {formatCurrency(getProductSubtotal(p)) || '$0'}
-                    </div>
-
-                    {/* Remove Action Button */}
-                    <button
-                      type="button"
-                      onClick={() => removeProductRow(p.id)}
-                      disabled={products.length === 1 || loading}
-                      className="w-9 h-10 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 hover:bg-zinc-50 dark:hover:bg-zinc-900 text-zinc-500 hover:text-red-500 dark:text-zinc-400 dark:hover:text-red-400 flex items-center justify-center cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:pointer-events-none active:scale-95 text-lg font-bold select-none"
+                  return (
+                    <div
+                      key={p.id}
+                      className={cn(
+                        "relative rounded-2xl border pt-4 pb-3 px-3 transition-all duration-200 animate-in fade-in duration-150",
+                        p.importeManual
+                          ? "border-amber-200/80 dark:border-amber-800/50 bg-amber-50/40 dark:bg-amber-950/10"
+                          : "border-zinc-200/80 dark:border-zinc-800/60 bg-white/60 dark:bg-zinc-900/40"
+                      )}
                     >
-                      -
-                    </button>
-                  </div>
-                ))}
+                      {/* Row index pill */}
+                      <span className="absolute top-1.5 left-3 text-[9px] font-bold text-zinc-400 dark:text-zinc-500 select-none">
+                        #{idx + 1}
+                      </span>
+
+                      {/* Detalle + Remove */}
+                      <div className="flex items-center gap-2 mb-3">
+                        <Input
+                          type="text"
+                          value={p.detail}
+                          onChange={(e) => updateProductField(p.id, 'detail', e.target.value)}
+                          placeholder="Nombre del producto o servicio..."
+                          disabled={loading}
+                          className="flex-1 h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-white/80 dark:bg-zinc-950/60 px-3 text-sm font-medium placeholder:text-zinc-400 focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-300"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeProductRow(p.id)}
+                          disabled={products.length === 1 || loading}
+                          className="h-10 w-10 rounded-xl flex items-center justify-center text-zinc-300 dark:text-zinc-600 hover:text-red-500 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-950/30 transition-all duration-200 cursor-pointer disabled:opacity-0 disabled:pointer-events-none shrink-0"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 6 6 18M6 6l12 12"/>
+                          </svg>
+                        </button>
+                      </div>
+
+                      {/* Cant × PUnit = Importe row */}
+                      <div className="flex items-end gap-2">
+
+                        {/* CANT */}
+                        <div className="flex flex-col gap-1 shrink-0">
+                          <span className="text-[9px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider select-none text-center">Cant</span>
+                          <Input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            value={p.quantity}
+                            onChange={(e) => updateProductField(p.id, 'quantity', e.target.value)}
+                            placeholder="1"
+                            disabled={loading}
+                            className="w-12 h-9 text-center rounded-xl border-zinc-200 dark:border-zinc-700 bg-white/80 dark:bg-zinc-950/60 p-0 text-sm font-bold focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-300"
+                          />
+                        </div>
+
+                        <span className="text-zinc-300 dark:text-zinc-600 font-bold text-sm select-none pb-2">×</span>
+
+                        {/* P. UNIT */}
+                        <div className="flex flex-col gap-1 flex-1 min-w-0">
+                          <span className="text-[9px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider select-none">P. unitario</span>
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-400 dark:text-zinc-500 select-none pointer-events-none">$</span>
+                            <Input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={p.unitPrice}
+                              onChange={(e) => updateProductField(p.id, 'unitPrice', e.target.value)}
+                              placeholder="0"
+                              disabled={loading}
+                              className="h-9 pl-6 rounded-xl border-zinc-200 dark:border-zinc-700 bg-white/80 dark:bg-zinc-950/60 text-sm font-bold focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-300 w-full"
+                            />
+                          </div>
+                          {unitPriceNum > 0 && (
+                            <span className="text-[9px] text-zinc-400 dark:text-zinc-500 pl-0.5 tabular-nums">
+                              {formatCurrency(unitPriceNum)} c/u
+                            </span>
+                          )}
+                        </div>
+
+                        <span className="text-zinc-300 dark:text-zinc-600 font-bold text-sm select-none pb-2">=</span>
+
+                        {/* IMPORTE */}
+                        <div className="flex flex-col gap-1 shrink-0">
+                          <span className={cn(
+                            "text-[9px] font-bold uppercase tracking-wider select-none text-center",
+                            p.importeManual ? "text-amber-500 dark:text-amber-400" : "text-zinc-400 dark:text-zinc-500"
+                          )}>
+                            {p.importeManual ? 'Total ✏' : 'Total'}
+                          </span>
+                          <Input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            value={displayImporte}
+                            onChange={(e) => updateProductField(p.id, 'importe', e.target.value)}
+                            placeholder="0"
+                            disabled={loading}
+                            className={cn(
+                              "h-9 w-24 text-center rounded-xl text-sm font-extrabold focus-visible:ring-2 transition-all duration-200",
+                              p.importeManual
+                                ? "border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 focus-visible:ring-amber-400"
+                                : "border-zinc-200 dark:border-zinc-700 bg-zinc-100/80 dark:bg-zinc-800/60 text-zinc-800 dark:text-zinc-100 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-300"
+                            )}
+                          />
+                          {importeNum > 0 && (
+                            <span className={cn(
+                              "text-[9px] font-semibold text-center tabular-nums",
+                              p.importeManual ? "text-amber-500 dark:text-amber-400" : "text-zinc-400 dark:text-zinc-500"
+                            )}>
+                              {formatCurrency(importeNum)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Price Rule Suggestion */}
+                      {matchingRule && !p.importeManual && (
+                        <button
+                          type="button"
+                          onClick={() => applyPriceRule(p.id, matchingRule)}
+                          disabled={loading}
+                          className="mt-3 w-full flex items-center justify-between gap-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-700/50 px-3 py-2 rounded-xl hover:bg-amber-100 dark:hover:bg-amber-950/70 transition-all duration-150 cursor-pointer select-none animate-in fade-in slide-in-from-bottom-1 duration-150"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Tags className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                            <span className="truncate">
+                              💡 Precio especial ×{matchingRule.quantity}:
+                              <span className="ml-1 font-extrabold">{formatCurrency(matchingRule.special_price)}</span>
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-bold bg-amber-200/70 dark:bg-amber-800/50 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-full shrink-0">
+                            Aplicar →
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
 
               {/* Add Product Button */}
@@ -426,13 +593,15 @@ export default function SalesForm({ profile }: SalesFormProps) {
                 type="button"
                 onClick={addProductRow}
                 disabled={loading}
-                className="flex items-center gap-1.5 text-xs font-bold text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 mt-2.5 transition-colors duration-200 cursor-pointer self-start pl-1 select-none"
+                className="w-full flex items-center justify-center gap-2 h-10 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-xs font-bold text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:border-zinc-400 dark:hover:border-zinc-600 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/30 transition-all duration-200 cursor-pointer select-none"
               >
-                <span>+</span> Agregar producto
+                <span className="text-base leading-none">+</span>
+                Agregar producto
               </button>
             </div>
 
             {/* Combined Payment Toggle */}
+
             <div className="flex items-center justify-between p-3 bg-zinc-50/50 dark:bg-zinc-950/30 rounded-xl border border-zinc-200/50 dark:border-zinc-800/30">
               <div className="space-y-0.5">
                 <Label htmlFor="combined-payment" className="text-sm font-bold text-zinc-800 dark:text-zinc-200 cursor-pointer select-none">

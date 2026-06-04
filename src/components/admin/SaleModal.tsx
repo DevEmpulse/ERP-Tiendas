@@ -324,6 +324,8 @@ export function SaleModal({
 
       if (isCombined) {
         const txnRef = saleToEdit?.ref_code || Math.random().toString(36).substring(2, 6).toUpperCase()
+        // Only preserve original created_at when editing; for new sales omit it so DB uses default now()
+        const originalDate = isEditMode && saleToEdit?.created_at ? saleToEdit.created_at : undefined
         const salesToInsert: any[] = []
 
         const cashNum = parseInt(splitAmounts.cash || '0', 10)
@@ -331,7 +333,7 @@ export function SaleModal({
           store_id: storeId, employee_id: employeeId,
           description: `${description} (Efectivo - Ref: #${txnRef})`,
           payment_method: 'cash', total_amount: cashNum, client_id: clientId,
-          created_at: saleToEdit?.created_at,
+          ...(originalDate ? { created_at: originalDate } : {}),
         })
 
         const transferNum = parseInt(splitAmounts.transfer || '0', 10)
@@ -339,7 +341,7 @@ export function SaleModal({
           store_id: storeId, employee_id: employeeId,
           description: `${description} (Transferencia - Ref: #${txnRef})`,
           payment_method: 'transfer', total_amount: transferNum, client_id: clientId,
-          created_at: saleToEdit?.created_at,
+          ...(originalDate ? { created_at: originalDate } : {}),
         })
 
         const cardNum = parseInt(splitAmounts.card || '0', 10)
@@ -347,7 +349,7 @@ export function SaleModal({
           store_id: storeId, employee_id: employeeId,
           description: `${description} (Tarjeta - Ref: #${txnRef})`,
           payment_method: 'card', total_amount: cardNum, client_id: clientId,
-          created_at: saleToEdit?.created_at,
+          ...(originalDate ? { created_at: originalDate } : {}),
         })
 
         const { error: insertError } = await supabase.from('sales').insert(salesToInsert)

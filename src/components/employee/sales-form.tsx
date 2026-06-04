@@ -38,7 +38,7 @@ interface SalesFormProps {
 export default function SalesForm({ profile }: SalesFormProps) {
   // Product list state
   const [products, setProducts] = useState<ProductItem[]>([
-    { id: '1', quantity: '1', detail: '', unitPrice: '', importe: '', importeManual: false }
+    { id: '1', quantity: '', detail: '', unitPrice: '', importe: '', importeManual: false }
   ])
 
   // Price rules from store
@@ -124,7 +124,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
   const addProductRow = () => {
     setProducts(prev => [
       ...prev,
-      { id: Math.random().toString(), quantity: '1', detail: '', unitPrice: '', importe: '', importeManual: false }
+      { id: Math.random().toString(), quantity: '', detail: '', unitPrice: '', importe: '', importeManual: false }
     ])
   }
 
@@ -147,7 +147,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
 
         if (field === 'quantity' || field === 'unitPrice') {
           // Recalc importe from unitPrice × quantity (resets manual override)
-          const qty = parseInt(field === 'quantity' ? cleanValue : p.quantity || '0', 10)
+          const qty = parseInt(field === 'quantity' ? cleanValue || '1' : p.quantity || '1', 10)
           const price = parseInt(field === 'unitPrice' ? cleanValue : p.unitPrice || '0', 10)
           const calc = qty * price
           updated.importe = calc > 0 ? calc.toString() : ''
@@ -362,7 +362,7 @@ export default function SalesForm({ profile }: SalesFormProps) {
       showToast('¡Venta registrada con éxito!', 'success')
       
       // Clean form fields
-      setProducts([{ id: '1', quantity: '1', detail: '', unitPrice: '', importe: '', importeManual: false }])
+      setProducts([{ id: '1', quantity: '', detail: '', unitPrice: '', importe: '', importeManual: false }])
       setPaymentMethod('cash')
       setSplitAmounts({ cash: '', transfer: '', card: '' })
       setClientName('')

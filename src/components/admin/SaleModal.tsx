@@ -48,7 +48,7 @@ interface SaleModalProps {
 // Product line item
 interface ProductLine {
   id: string // local key only
-  cant: number
+  cant: string
   detalle: string
   p_unit: number
   importe: number
@@ -57,7 +57,7 @@ interface ProductLine {
 
 const emptyLine = (): ProductLine => ({
   id: Math.random().toString(36).slice(2),
-  cant: 1,
+  cant: '',
   detalle: '',
   p_unit: 0,
   importe: 0,
@@ -76,7 +76,7 @@ const parseDescription = (raw: string): { lines: ProductLine[]; notes: string } 
       if (Array.isArray(parsed) && parsed.length > 0) {
         const lines: ProductLine[] = parsed.map((item: any) => ({
           id: Math.random().toString(36).slice(2),
-          cant: Number(item.cant ?? item.cantidad ?? 1),
+          cant: String(item.cant ?? item.cantidad ?? '1'),
           detalle: String(item.detalle ?? item.descripcion ?? ''),
           p_unit: Number(item.p_unit ?? item.precio_unitario ?? 0),
           importe: Number(item.importe ?? item.total ?? 0),
@@ -91,7 +91,7 @@ const parseDescription = (raw: string): { lines: ProductLine[]; notes: string } 
 
   // Plain text — put it in a single detalle field
   return {
-    lines: [{ id: Math.random().toString(36).slice(2), cant: 1, detalle: trimmed, p_unit: 0, importe: 0, importeManual: false }],
+    lines: [{ id: Math.random().toString(36).slice(2), cant: '1', detalle: trimmed, p_unit: 0, importe: 0, importeManual: false }],
     notes: '',
   }
 }
@@ -100,7 +100,7 @@ const parseDescription = (raw: string): { lines: ProductLine[]; notes: string } 
 const serializeLines = (lines: ProductLine[]): string => {
   const items = lines
     .filter(l => l.detalle.trim() !== '')
-    .map(({ cant, detalle, p_unit, importe }) => ({ cant, detalle, p_unit, importe }))
+    .map(({ cant, detalle, p_unit, importe }) => ({ cant: Number(cant) || 1, detalle, p_unit, importe }))
   return JSON.stringify(items)
 }
 
@@ -220,16 +220,26 @@ export function SaleModal({
     setLines(prev =>
       prev.map(l => {
         if (l.id !== id) return l
-        const updated = { ...l, [field]: field === 'detalle' ? raw : Number(raw) || 0 }
+
+        let updatedVal = raw
+        if (field === 'cant') {
+          updatedVal = String(raw).replace(/\D/g, '')
+        }
+
+        const updated = {
+          ...l,
+          [field]: field === 'detalle' ? raw : (field === 'cant' ? updatedVal : Number(raw) || 0)
+        } as ProductLine
 
         if (field === 'cant' || field === 'p_unit') {
           // Standard recalc: importe = cant * p_unit, clear manual override
-          updated.importe = updated.cant * updated.p_unit
+          const qty = Number(updated.cant) || 1
+          updated.importe = qty * updated.p_unit
           updated.importeManual = false
         } else if (field === 'importe') {
           // User overrode importe directly: recalc p_unit = importe / cant
           const imp = Number(raw) || 0
-          const qty = updated.cant || 1
+          const qty = Number(updated.cant) || 1
           updated.p_unit = Math.round(imp / qty)
           updated.importeManual = true
         }
@@ -253,11 +263,12 @@ export function SaleModal({
   }
 
   // Get matching price rule for a line
-  const getMatchingRule = (detalle: string, cant: number): PriceRule | null => {
+  const getMatchingRule = (detalle: string, cant: string | number): PriceRule | null => {
     if (!detalle.trim()) return null
     const lower = detalle.trim().toLowerCase()
+    const qty = Number(cant) || 0
     return priceRules.find(
-      r => r.product_name.toLowerCase() === lower && r.quantity === cant
+      r => r.product_name.toLowerCase() === lower && r.quantity === qty
     ) || null
   }
 
@@ -432,7 +443,7 @@ export function SaleModal({
               </div>
 
               {/* Column headers */}
-              <div className="grid grid-cols-[36px_1fr_80px_80px_80px_32px] gap-1.5 px-0.5">
+              <div className="grid grid-cols-[36px_1fr_80px_80px_32px] gap-1.5 px-0.5">
                 <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wide text-center">Cant</span>
                 <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wide">Detalle</span>
                 <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wide text-right">P. Unit</span>
@@ -453,8 +464,8 @@ export function SaleModal({
                         <Input
                           type="text"
                           inputMode="numeric"
-                          value={line.cant || ''}
-                          onChange={(e) => updateLine(line.id, 'cant', e.target.value.replace(/\D/g, ''))}
+                          value={line.cant}
+                          onChange={(e) => updateLine(line.id, 'cant', e.target.value)}
                           disabled={loading}
                           placeholder="1"
                           className="h-9 text-center text-xs font-semibold rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 px-1"

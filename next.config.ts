@@ -4,6 +4,8 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 // Extract just the hostname from the Supabase URL for CSP (e.g. "abc.supabase.co")
 const supabaseHost = supabaseUrl ? new URL(supabaseUrl).host : "";
 
+const isDev = process.env.NODE_ENV === 'development';
+
 const nextConfig: NextConfig = {
   async headers() {
     return [
@@ -31,8 +33,8 @@ const nextConfig: NextConfig = {
               "default-src 'self'",
               // Supabase API + Google OAuth
               `connect-src 'self' https://${supabaseHost} https://accounts.google.com https://*.googleapis.com wss://${supabaseHost}`,
-              // Scripts: self + Google OAuth iframe
-              "script-src 'self' 'unsafe-inline' https://accounts.google.com",
+              // Scripts: self + Google OAuth iframe + unsafe-eval in dev for React callstacks
+              `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://accounts.google.com`,
               // Styles: self + inline (required by Tailwind)
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               // Fonts

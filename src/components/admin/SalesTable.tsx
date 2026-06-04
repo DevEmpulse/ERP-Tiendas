@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { Search, ChevronLeft, ChevronRight, HelpCircle, Edit, Trash2, ShieldAlert, CheckCircle2 } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, HelpCircle, Edit, Trash2, ShieldAlert } from 'lucide-react'
 import { createClient } from '@/utils/supabase/client'
 import { SaleModal } from './SaleModal'
 import {
@@ -17,6 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { useToast, Toaster } from '@/components/ui/toast'
 
 import { GroupedSale, parseSaleDescription, SaleItem } from '@/lib/salesHelper'
 
@@ -81,23 +82,19 @@ export function SalesTable({
   const [isEditOpen, setIsEditOpen] = useState(false)
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
   const [selectedSale, setSelectedSale] = useState<GroupedSale | null>(null)
-  
-  const [submitting, setSubmitting] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
+  const { toasts, toast, dismiss } = useToast()
   const supabase = createClient()
 
   // Handle Delete Sale
   const handleDeleteSale = async () => {
     if (!selectedSale) return
 
-    setSubmitting(true)
-    setErrorMsg(null)
-    setSuccessMsg(null)
+    setIsDeleteOpen(false)
+    const recordIdsToDelete = selectedSale.payments.map(p => p.id)
+    setSelectedSale(null)
 
     try {
-      const recordIdsToDelete = selectedSale.payments.map(p => p.id)
       if (recordIdsToDelete.length > 0) {
         const { error } = await supabase
           .from('sales')
@@ -107,19 +104,12 @@ export function SalesTable({
         if (error) throw error
       }
 
-      setSuccessMsg('Venta eliminada con éxito.')
+      toast('Venta eliminada con éxito.', 'success')
       onSalesChange()
-
-      setTimeout(() => {
-        setIsDeleteOpen(false)
-        setSuccessMsg(null)
-        setSelectedSale(null)
-      }, 1500)
     } catch (err: any) {
       console.error('Error deleting sale:', err)
-      setErrorMsg(err.message || 'Error al eliminar la venta.')
-    } finally {
-      setSubmitting(false)
+      toast(err.message || 'Error al eliminar la venta.', 'error')
+      onSalesChange() // refresh on error
     }
   }
 
@@ -222,7 +212,9 @@ export function SalesTable({
   }
 
   return (
-    <Card className="border border-zinc-200/80 bg-white shadow-xs dark:border-zinc-800/50 dark:bg-zinc-900 rounded-xl overflow-hidden">
+    <>
+      <Toaster toasts={toasts} dismiss={dismiss} />
+      <Card className="border border-zinc-200/80 bg-white shadow-xs dark:border-zinc-800/50 dark:bg-zinc-900 rounded-xl overflow-hidden">
       <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-2 sm:space-y-0 pb-4 border-b border-zinc-100 dark:border-zinc-800/80">
         <div>
           <CardTitle className="text-lg font-bold text-zinc-900 dark:text-zinc-50">
@@ -463,25 +455,10 @@ export function SalesTable({
             </DialogDescription>
           </DialogHeader>
 
-          {errorMsg && (
-            <div className="flex items-start gap-2 p-3 text-xs text-red-655 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
-              <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
-
-          {successMsg && (
-            <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
-              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>{successMsg}</span>
-            </div>
-          )}
-
           <DialogFooter className="pt-4 flex gap-2 justify-end">
             <Button
               variant="outline"
               size="sm"
-              disabled={submitting}
               onClick={() => setIsDeleteOpen(false)}
               className="h-9 px-4 rounded-lg border-zinc-200 text-zinc-650 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-350 dark:hover:bg-zinc-950 cursor-pointer text-xs font-semibold"
             >
@@ -490,15 +467,15 @@ export function SalesTable({
             <Button
               variant="destructive"
               size="sm"
-              disabled={submitting}
               onClick={handleDeleteSale}
               className="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-500 text-white dark:bg-red-750 dark:hover:bg-red-700 cursor-pointer text-xs font-semibold"
             >
-              {submitting ? 'Eliminando...' : 'Sí, Eliminar'}
+              Sí, Eliminar
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </Card>
+  </>
   )
 }

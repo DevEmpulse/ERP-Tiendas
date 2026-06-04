@@ -20,12 +20,12 @@ import {
   Trash2,
   Loader2,
   ShieldAlert,
-  CheckCircle2,
   Package,
   Hash,
   DollarSign,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useToast, Toaster } from '@/components/ui/toast'
 
 interface PriceRule {
   id: string
@@ -67,19 +67,12 @@ export function StockView({ storeId }: StockViewProps) {
   const [form, setForm] = useState(emptyForm())
   const [saving, setSaving] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
   // Delete confirmation state
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  // Toast
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
-
-  const showToast = (message: string, type: 'success' | 'error') => {
-    setToast({ message, type })
-    setTimeout(() => setToast(null), 3500)
-  }
+  const { toasts, toast, dismiss } = useToast()
 
   const loadRules = useCallback(async () => {
     if (!storeId) return
@@ -129,7 +122,6 @@ export function StockView({ storeId }: StockViewProps) {
     setEditingRule(null)
     setForm(emptyForm())
     setErrorMsg(null)
-    setSuccessMsg(null)
     setIsModalOpen(true)
   }
 
@@ -142,7 +134,6 @@ export function StockView({ storeId }: StockViewProps) {
       unit_price: rule.unit_price.toString(),
     })
     setErrorMsg(null)
-    setSuccessMsg(null)
     setIsModalOpen(true)
   }
 
@@ -160,32 +151,41 @@ export function StockView({ storeId }: StockViewProps) {
     if (!special_price || special_price <= 0) { setErrorMsg('El precio especial debe ser mayor a 0.'); return }
     if (!unit_price || unit_price <= 0) { setErrorMsg('El precio unitario debe ser mayor a 0.'); return }
 
-    setSaving(true)
+    // Optimistic: capture state and close modal immediately
+    const isEditing = !!editingRule
+    const editingId = editingRule?.id
+    setIsModalOpen(false)
     setErrorMsg(null)
+    setSaving(true)
+
     try {
-      if (editingRule) {
+      if (isEditing && editingId) {
         const { error } = await supabase
           .from('product_price_rules')
           .update({ product_name, quantity, special_price, unit_price })
-          .eq('id', editingRule.id)
+          .eq('id', editingId)
         if (error) throw error
+        toast('Regla actualizada.', 'success')
       } else {
         const { error } = await supabase
           .from('product_price_rules')
           .insert({ store_id: storeId, product_name, quantity, special_price, unit_price })
         if (error) throw error
+        toast('Regla de precio creada.', 'success')
       }
-      setSuccessMsg(editingRule ? 'Regla actualizada.' : 'Regla creada.')
       await loadRules()
-      setTimeout(() => { setIsModalOpen(false); setSuccessMsg(null) }, 1200)
     } catch (err: any) {
-      setErrorMsg(err.message || 'Error al guardar la regla.')
+      toast(err.message || 'Error al guardar la regla.', 'error')
+      await loadRules()
     } finally {
       setSaving(false)
     }
   }
 
   const handleDelete = async (id: string) => {
+    // Optimistic: close dialog and remove from list immediately
+    setDeleteConfirmId(null)
+    setRules(prev => prev.filter(r => r.id !== id))
     setDeleting(true)
     try {
       const { error } = await supabase
@@ -193,38 +193,18 @@ export function StockView({ storeId }: StockViewProps) {
         .delete()
         .eq('id', id)
       if (error) throw error
-      setRules(prev => prev.filter(r => r.id !== id))
-      showToast('Regla eliminada correctamente.', 'success')
+      toast('Regla eliminada correctamente.', 'success')
     } catch (err: any) {
-      showToast(err.message || 'Error al eliminar.', 'error')
+      toast(err.message || 'Error al eliminar.', 'error')
+      await loadRules() // restore on error
     } finally {
       setDeleting(false)
-      setDeleteConfirmId(null)
     }
   }
 
   return (
     <>
-      {/* Toast */}
-      {toast && (
-        <div
-          className={cn(
-            'fixed top-6 right-6 z-50 w-80 p-4 rounded-xl border shadow-lg backdrop-blur-md transition-all duration-300 animate-in slide-in-from-top-4 fade-in',
-            toast.type === 'success'
-              ? 'border-emerald-100 dark:border-emerald-950/30 bg-emerald-50/95 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300'
-              : 'border-red-100 dark:border-red-950/30 bg-red-50/95 dark:bg-red-950/30 text-red-800 dark:text-red-300'
-          )}
-        >
-          <div className="flex items-center gap-3">
-            {toast.type === 'success' ? (
-              <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0" />
-            ) : (
-              <ShieldAlert className="h-5 w-5 text-red-500 shrink-0" />
-            )}
-            <p className="text-sm font-medium">{toast.message}</p>
-          </div>
-        </div>
-      )}
+      <Toaster toasts={toasts} dismiss={dismiss} />
 
       {/* Delete Confirm Dialog */}
       <Dialog open={!!deleteConfirmId} onOpenChange={(open) => { if (!open) setDeleteConfirmId(null) }}>
@@ -382,12 +362,6 @@ export function StockView({ storeId }: StockViewProps) {
                   <span>{errorMsg}</span>
                 </div>
               )}
-              {successMsg && (
-                <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-xl font-medium">
-                  <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-                  <span>{successMsg}</span>
-                </div>
-              )}
             </div>
 
             <DialogFooter className="px-6 py-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900 flex gap-2">
@@ -395,7 +369,6 @@ export function StockView({ storeId }: StockViewProps) {
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={saving}
                 onClick={() => setIsModalOpen(false)}
                 className="h-9 px-4 rounded-xl border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer text-xs font-semibold flex-1 sm:flex-none"
               >
@@ -403,14 +376,9 @@ export function StockView({ storeId }: StockViewProps) {
               </Button>
               <Button
                 type="submit"
-                disabled={saving}
-                className="h-9 px-5 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex-1 sm:flex-none flex items-center justify-center gap-1.5"
+                className="h-9 px-5 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex-1 sm:flex-none"
               >
-                {saving ? (
-                  <><Loader2 className="h-3.5 w-3.5 animate-spin" /><span>Guardando...</span></>
-                ) : (
-                  <span>{editingRule ? 'Guardar Cambios' : 'Crear Regla'}</span>
-                )}
+                {editingRule ? 'Guardar Cambios' : 'Crear Regla'}
               </Button>
             </DialogFooter>
           </form>

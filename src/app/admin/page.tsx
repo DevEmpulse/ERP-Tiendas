@@ -75,17 +75,20 @@ export default function AdminPage() {
   useEffect(() => {
     async function loadAdminContext() {
       try {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) {
+        // getSession reads from cookie — no extra network round-trip
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session?.user) {
           router.push('/login')
           return
         }
 
-        // Fetch user profile
+        const userId = session.user.id
+
+        // Fetch profile and store in parallel
         const { data: profile, error: pError } = await supabase
           .from('profiles')
           .select('id, name, email, role, store_id')
-          .eq('id', user.id)
+          .eq('id', userId)
           .single()
 
         if (pError || !profile) {
@@ -99,19 +102,16 @@ export default function AdminPage() {
           return
         }
 
+        // Fetch store in parallel with setting user profile
+        const storePromise = profile.store_id
+          ? supabase.from('stores').select('id, name').eq('id', profile.store_id).single()
+          : Promise.resolve({ data: null, error: null })
+
         setUserProfile(profile as Profile)
 
-        // Fetch store info
-        if (profile.store_id) {
-          const { data: store, error: sError } = await supabase
-            .from('stores')
-            .select('id, name')
-            .eq('id', profile.store_id)
-            .single()
-
-          if (!sError && store) {
-            setStoreInfo(store as StoreData)
-          }
+        const { data: store, error: sError } = await storePromise
+        if (!sError && store) {
+          setStoreInfo(store as StoreData)
         }
       } catch (err) {
         console.error('Error loading admin context:', err)
@@ -122,76 +122,60 @@ export default function AdminPage() {
 
     loadAdminContext()
   }, [router, supabase])
-  // Load Sales Data once store is known
+  // Load Sales + Employees in parallel once store is known
   useEffect(() => {
     if (!userProfile?.store_id) return
 
-    async function loadSalesData() {
+    async function loadData() {
       setDataLoading(true)
       try {
-        // Fetch all sales for this store
-        const { data, error } = await supabase
-          .from('sales')
-          .select(`
-            id,
-            created_at,
-            description,
-            payment_method,
-            total_amount,
-            employee_id,
-            client_id,
-            clients (
-              id,
-              phone
-            ),
-            profiles (
-              id,
-              name,
-              email
-            )
-          `)
-          .order('created_at', { ascending: false })
+        // Last 90 days filter to avoid loading all history
+        const since = new Date()
+        since.setDate(since.getDate() - 90)
 
-        if (error) throw error
-        
-        // Mapped values
-        const mappedSales = (data || []).map((sale: any) => ({
+        const [salesResult, employeesResult] = await Promise.all([
+          supabase
+            .from('sales')
+            .select(`
+              id,
+              created_at,
+              description,
+              payment_method,
+              total_amount,
+              employee_id,
+              client_id,
+              clients ( id, phone ),
+              profiles ( id, name, email )
+            `)
+            .gte('created_at', since.toISOString())
+            .order('created_at', { ascending: false })
+            .limit(600),
+          supabase
+            .from('profiles')
+            .select('id, name, email, role, store_id')
+            .order('name', { ascending: true })
+        ])
+
+        if (salesResult.error) throw salesResult.error
+
+        const mappedSales = (salesResult.data || []).map((sale: any) => ({
           ...sale,
           total_amount: Number(sale.total_amount)
         }))
-
         setSales(mappedSales)
+
+        if (!employeesResult.error && employeesResult.data) {
+          setEmployeesList(employeesResult.data as Profile[])
+        }
       } catch (err) {
-        console.error('Error fetching sales:', err)
+        console.error('Error fetching data:', err)
       } finally {
         setDataLoading(false)
       }
     }
 
-    loadSalesData()
+    loadData()
   }, [userProfile, supabase, refreshSalesKey])
-
-  // Load Employees list
-  useEffect(() => {
-    if (!userProfile?.store_id) return
-
-    async function loadEmployees() {
-      try {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('id, name, email, role, store_id')
-          .order('name', { ascending: true })
-
-        if (!error && data) {
-          setEmployeesList(data as Profile[])
-        }
-      } catch (err) {
-        console.error('Error loading employees:', err)
-      }
-    }
-
-    loadEmployees()
-  }, [userProfile, supabase])
 
   // Realtime subscription for sales INSERT events
   useEffect(() => {
@@ -211,17 +195,12 @@ export default function AdminPage() {
           filter: `store_id=eq.${storeId}`,
         },
         async (payload) => {
-          console.log('Realtime INSERT payload received:', payload)
           const newRecord = payload.new as any
           if (!newRecord) return
 
           try {
-            // Fetch employee profile to enrich joined data
-            const { data: profile } = await supabase
-              .from('profiles')
-              .select('id, name, email')
-              .eq('id', newRecord.employee_id)
-              .single()
+            // Fix N+1: look up employee from already-loaded list (no extra DB call)
+            const profile = employeesList.find(e => e.id === newRecord.employee_id) ?? null
 
             const enrichedSale: Sale = {
               id: newRecord.id,
@@ -230,10 +209,8 @@ export default function AdminPage() {
               payment_method: newRecord.payment_method,
               total_amount: Number(newRecord.total_amount),
               employee_id: newRecord.employee_id,
-              profiles: profile || null,
+              profiles: profile ? { id: profile.id, name: profile.name, email: profile.email } : null,
             }
-
-            console.log('Enriched realtime sale:', enrichedSale)
 
             // Update sales state (prepend new sale)
             setSales((prev) => {
@@ -241,10 +218,8 @@ export default function AdminPage() {
               return [enrichedSale, ...prev]
             })
 
-            // Highlight the new sale ID
+            // Highlight the new sale ID for 3.5 seconds
             setHighlightedSaleIds((prev) => [...prev, enrichedSale.id])
-
-            // Remove highlighted ID after 3.5 seconds
             setTimeout(() => {
               setHighlightedSaleIds((prev) => prev.filter((id) => id !== enrichedSale.id))
             }, 3500)

@@ -2,10 +2,19 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { updateSession } from '@/utils/supabase/middleware'
 
 export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl
+  const code = request.nextUrl.searchParams.get('code')
+
+  // If there is an auth code in the query params of /login, redirect to /auth/callback immediately
+  // without calling updateSession to avoid invalid refresh token errors.
+  if (pathname === '/login' && code) {
+    const redirectUrl = request.nextUrl.clone()
+    redirectUrl.pathname = '/auth/callback'
+    return NextResponse.redirect(redirectUrl)
+  }
+
   // 1. Refresh the session and get the supabase client + user
   const { supabaseResponse, user, supabase } = await updateSession(request)
-
-  const { pathname } = request.nextUrl
 
   // Helper to redirect while keeping the updated session cookies
   const redirectWithCookies = (targetPath: string) => {
@@ -124,9 +133,10 @@ export const config = {
      * Match all request paths except for the ones starting with:
      * - _next/static (static files)
      * - _next/image (image optimization files)
+     * - auth (Supabase auth callback and routes)
      * - favicon.ico, sw.js, manifest files (PWA / static public assets)
      * - Files with known static extensions (images, fonts, JS, JSON, ico)
      */
-    '/((?!_next/static|_next/image|favicon\\.ico|sw\\.js|manifest\\.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|json|woff2?)$).*)',
+    '/((?!_next/static|_next/image|auth|favicon\\.ico|sw\\.js|manifest\\.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|json|woff2?)$).*)',
   ],
 }

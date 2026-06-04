@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import SalesForm from './sales-form'
@@ -17,31 +17,12 @@ interface Profile {
 
 interface EmployeeDashboardProps {
   profile: Profile
+  storeName: string
 }
 
-export default function EmployeeDashboard({ profile }: EmployeeDashboardProps) {
+export default function EmployeeDashboard({ profile, storeName }: EmployeeDashboardProps) {
   const router = useRouter()
-  const [storeName, setStoreName] = useState<string>('')
   const [logoutLoading, setLogoutLoading] = useState(false)
-
-  useEffect(() => {
-    const fetchStoreName = async () => {
-      const supabase = createClient()
-      const { data, error } = await supabase
-        .from('stores')
-        .select('name')
-        .eq('id', profile.store_id)
-        .single()
-
-      if (data && !error) {
-        setStoreName(data.name)
-      }
-    }
-
-    if (profile.store_id) {
-      fetchStoreName()
-    }
-  }, [profile.store_id])
 
   const handleLogout = async () => {
     setLogoutLoading(true)
@@ -69,7 +50,7 @@ export default function EmployeeDashboard({ profile }: EmployeeDashboardProps) {
               </h2>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 font-medium flex items-center gap-1 mt-0.5">
                 <Store className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
-                <span>{storeName || 'Cargando tienda...'}</span>
+                <span>{storeName || 'Mi Tienda'}</span>
               </p>
             </div>
           </div>

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { GroupedSale } from '@/lib/salesHelper'
 import { cn } from '@/lib/utils'
+import { useToast, Toaster } from '@/components/ui/toast'
 
 interface Profile {
   id: string
@@ -136,7 +137,8 @@ export function SaleModal({
   // Loading & notification states
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [successMsg, setSuccessMsg] = useState<string | null>(null)
+
+  const { toasts, toast, dismiss } = useToast()
 
   const supabase = createClient()
 
@@ -167,7 +169,6 @@ export function SaleModal({
   useEffect(() => {
     if (!isOpen) return
     setErrorMsg(null)
-    setSuccessMsg(null)
 
     if (saleToEdit) {
       setEmployeeId(saleToEdit.employee_id)
@@ -281,7 +282,10 @@ export function SaleModal({
 
     setLoading(true)
     setErrorMsg(null)
-    setSuccessMsg(null)
+
+    // Optimistic: close modal immediately, run DB in background
+    onSuccess()
+    onOpenChange(false)
 
     try {
       let clientId: string | null = null
@@ -366,18 +370,18 @@ export function SaleModal({
         if (insertError) throw insertError
       }
 
-      setSuccessMsg(isEditMode ? 'Venta actualizada con éxito.' : 'Venta registrada con éxito.')
-      onSuccess()
-      setTimeout(() => { onOpenChange(false); setSuccessMsg(null) }, 1500)
+      toast(isEditMode ? 'Venta actualizada con éxito.' : 'Venta registrada con éxito.', 'success')
     } catch (err: any) {
       console.error('Error saving sale:', err)
-      setErrorMsg(err.message || 'Error al guardar la venta.')
+      toast(err.message || 'Error al guardar la venta.', 'error')
     } finally {
       setLoading(false)
     }
   }
 
   return (
+    <>
+    <Toaster toasts={toasts} dismiss={dismiss} />
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 p-0 rounded-2xl shadow-xl overflow-hidden">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-100 dark:border-zinc-800">
@@ -762,12 +766,6 @@ export function SaleModal({
                 <span>{errorMsg}</span>
               </div>
             )}
-            {successMsg && (
-              <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-xl font-medium">
-                <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{successMsg}</span>
-              </div>
-            )}
           </div>
 
           {/* Footer */}
@@ -797,5 +795,6 @@ export function SaleModal({
         </form>
       </DialogContent>
     </Dialog>
+    </>
   )
 }

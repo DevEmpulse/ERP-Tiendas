@@ -17,7 +17,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Users, UserPlus, Search, Mail, ShieldAlert, CheckCircle2, BadgeAlert, Edit, Trash2 } from 'lucide-react'
+import { useToast, Toaster } from '@/components/ui/toast'
+import { Users, UserPlus, Search, Mail, ShieldAlert, BadgeAlert, Edit, Trash2 } from 'lucide-react'
 
 interface UserProfile {
   id: string
@@ -42,7 +43,6 @@ export function UserManager({ storeId }: UserManagerProps) {
   const [newName, setNewName] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
   // Edit/Delete states
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
@@ -52,6 +52,7 @@ export function UserManager({ storeId }: UserManagerProps) {
   const [editName, setEditName] = useState('')
   const [editEmail, setEditEmail] = useState('')
 
+  const { toasts, toast, dismiss } = useToast()
   const supabase = createClient()
 
   // Fetch current profiles
@@ -99,32 +100,28 @@ export function UserManager({ storeId }: UserManagerProps) {
       return
     }
 
-    setSubmitting(true)
+    // Optimistic close
+    const userSnapshot = selectedUser
+    const nameSnapshot = editName.trim()
+    const emailSnapshot = editEmail.trim().toLowerCase()
+    setIsEditOpen(false)
+    setSelectedUser(null)
     setErrorMsg(null)
-    setSuccessMsg(null)
 
     try {
       const { error } = await supabase.rpc('update_employee_user', {
-        p_employee_id: selectedUser.id,
-        p_name: editName.trim(),
-        p_email: editEmail.trim().toLowerCase()
+        p_employee_id: userSnapshot.id,
+        p_name: nameSnapshot,
+        p_email: emailSnapshot
       })
 
       if (error) throw error
 
-      setSuccessMsg('Miembro del equipo actualizado con éxito.')
+      toast('Miembro del equipo actualizado con éxito.', 'success')
       await fetchProfiles()
-
-      setTimeout(() => {
-        setIsEditOpen(false)
-        setSuccessMsg(null)
-        setSelectedUser(null)
-      }, 1500)
     } catch (err: any) {
       console.error('Error updating employee:', err)
-      setErrorMsg(err.message || 'Error al actualizar el miembro del equipo.')
-    } finally {
-      setSubmitting(false)
+      toast(err.message || 'Error al actualizar el miembro del equipo.', 'error')
     }
   }
 
@@ -132,30 +129,25 @@ export function UserManager({ storeId }: UserManagerProps) {
   const handleDeleteUser = async () => {
     if (!selectedUser) return
 
-    setSubmitting(true)
-    setErrorMsg(null)
-    setSuccessMsg(null)
+    // Optimistic close + remove from list
+    const userSnapshot = selectedUser
+    setIsDeleteOpen(false)
+    setSelectedUser(null)
+    setProfiles(prev => prev.filter(p => p.id !== userSnapshot.id))
 
     try {
       const { error } = await supabase.rpc('delete_employee_user', {
-        p_employee_id: selectedUser.id
+        p_employee_id: userSnapshot.id
       })
 
       if (error) throw error
 
-      setSuccessMsg('Miembro del equipo eliminado con éxito.')
-      await fetchProfiles()
-
-      setTimeout(() => {
-        setIsDeleteOpen(false)
-        setSuccessMsg(null)
-        setSelectedUser(null)
-      }, 1500)
+      toast('Miembro del equipo eliminado con éxito.', 'success')
     } catch (err: any) {
       console.error('Error deleting employee:', err)
-      setErrorMsg(err.message || 'Error al eliminar el miembro del equipo.')
-    } finally {
-      setSubmitting(false)
+      toast(err.message || 'Error al eliminar el miembro del equipo.', 'error')
+      // Restore the user on error
+      await fetchProfiles()
     }
   }
 
@@ -164,14 +156,11 @@ export function UserManager({ storeId }: UserManagerProps) {
     setEditName(user.name || '')
     setEditEmail(user.email || '')
     setErrorMsg(null)
-    setSuccessMsg(null)
     setIsEditOpen(true)
   }
 
   const openDelete = (user: UserProfile) => {
     setSelectedUser(user)
-    setErrorMsg(null)
-    setSuccessMsg(null)
     setIsDeleteOpen(true)
   }
 
@@ -194,15 +183,19 @@ export function UserManager({ storeId }: UserManagerProps) {
       return
     }
 
-    setSubmitting(true)
+    // Optimistic close
+    const emailSnapshot = newEmail.trim().toLowerCase()
+    const nameSnapshot = newName.trim()
+    setIsDialogOpen(false)
+    setNewEmail('')
+    setNewName('')
     setErrorMsg(null)
-    setSuccessMsg(null)
 
+    setSubmitting(true)
     try {
-      // Call the stored database function preload_employee
       const { data, error } = await supabase.rpc('preload_employee', {
-        p_email: newEmail.trim().toLowerCase(),
-        p_name: newName.trim(),
+        p_email: emailSnapshot,
+        p_name: nameSnapshot,
         p_role: 'employee',
         p_store_id: storeId
       })
@@ -211,22 +204,11 @@ export function UserManager({ storeId }: UserManagerProps) {
         throw new Error(error.message || 'Error al precargar la empleado/a.')
       }
 
-      setSuccessMsg(`¡Perfil de empleado/a pre-creado con éxito! Se asociará cuando ${newEmail} inicie sesión.`)
-      setNewEmail('')
-      setNewName('')
-
-      // Refresh the profiles list
+      toast(`¡Perfil pre-creado! Se asociará cuando ${emailSnapshot} inicie sesión.`, 'success')
       await fetchProfiles()
-
-      // Close dialog after short delay
-      setTimeout(() => {
-        setIsDialogOpen(false)
-        setSuccessMsg(null)
-      }, 3000)
-
     } catch (err: any) {
       console.error('Error preloading employee:', err)
-      setErrorMsg(err.message || 'Error de conexión con la base de datos.')
+      toast(err.message || 'Error de conexión con la base de datos.', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -260,333 +242,304 @@ export function UserManager({ storeId }: UserManagerProps) {
   }
 
   return (
-    <Card className="border border-zinc-200/80 bg-white shadow-xs dark:border-zinc-800/50 dark:bg-zinc-900 rounded-xl overflow-hidden">
-      <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-3 sm:space-y-0 pb-4 border-b border-zinc-100 dark:border-zinc-800/80">
-        <div>
-          <CardTitle className="text-lg font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
-            <Users className="h-5 w-5 text-indigo-500" />
-            Gestión del Equipo
-          </CardTitle>
-          <CardDescription className="text-xs text-zinc-500 dark:text-zinc-400">
-            Administra los roles, accesos y registra invitaciones para nuevas empleado/as.
-          </CardDescription>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Search bar */}
-          <div className="relative w-full sm:w-56">
-            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-zinc-400" />
-            <Input
-              placeholder="Buscar miembro..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-8 pr-3 h-8 bg-zinc-50/50 border-zinc-200 focus-visible:ring-zinc-400 dark:bg-zinc-950/30 dark:border-zinc-850 rounded-lg text-xs"
-            />
+    <>
+      <Toaster toasts={toasts} dismiss={dismiss} />
+      <Card className="border border-zinc-200/80 bg-white shadow-xs dark:border-zinc-800/50 dark:bg-zinc-900 rounded-xl overflow-hidden">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-3 sm:space-y-0 pb-4 border-b border-zinc-100 dark:border-zinc-800/80">
+          <div>
+            <CardTitle className="text-lg font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+              <Users className="h-5 w-5 text-indigo-500" />
+              Gestión del Equipo
+            </CardTitle>
+            <CardDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+              Administra los roles, accesos y registra invitaciones para nuevas empleado/as.
+            </CardDescription>
           </div>
 
-          {/* Invitation Dialog Trigger */}
-          <Dialog open={isDialogOpen} onOpenChange={(open) => {
-            setIsDialogOpen(open)
-            if (!open) {
-              setErrorMsg(null)
-              setSuccessMsg(null)
-            }
-          }}>
-            <DialogTrigger render={
-              <Button size="sm" className="h-8 gap-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold">
-                <UserPlus className="h-4 w-4" />
-                Registrar Gmail
-              </Button>
-            } />
-
-            <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
-              <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
-                <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
-                  Pre-cargar empleado/a
-                </DialogTitle>
-                <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Registra el correo Gmail de la empleado/a. Cuando ella inicie sesión con Google, se unirá automáticamente a esta tienda con rol de empleado/a.
-                </DialogDescription>
-              </DialogHeader>
-
-              {/* Form */}
-              <form onSubmit={handleSubmitInvite} className="space-y-4 pt-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="name" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                    Nombre Completo
-                  </Label>
-                  <Input
-                    id="name"
-                    placeholder="Ej. María González"
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    required
-                    className="h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label htmlFor="email" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                    Correo Electrónico (Gmail)
-                  </Label>
-                  <div className="relative">
-                    <Mail className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-400" />
-                    <Input
-                      id="email"
-                      type="email"
-                      placeholder="ejemplo@gmail.com"
-                      value={newEmail}
-                      onChange={(e) => setNewEmail(e.target.value)}
-                      required
-                      className="pl-9 h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
-                    />
-                  </div>
-                </div>
-
-                {/* Notifications inside Form */}
-                {errorMsg && (
-                  <div className="flex items-start gap-2 p-3 text-xs text-red-600 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
-                    <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span>{errorMsg}</span>
-                  </div>
-                )}
-
-                {successMsg && (
-                  <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
-                    <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span>{successMsg}</span>
-                  </div>
-                )}
-
-                <DialogFooter className="pt-2">
-                  <Button
-                    type="submit"
-                    disabled={submitting}
-                    className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
-                  >
-                    {submitting ? 'Guardando...' : 'Pre-cargar empleado/a'}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
-      </CardHeader>
-
-      <CardContent className="p-0">
-        {loading ? (
-          <div className="p-4 space-y-3">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        ) : filteredProfiles.length === 0 ? (
-          <div className="py-12 text-center text-xs text-zinc-400">
-            No se encontraron miembros de equipo.
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader className="bg-zinc-50/75 dark:bg-zinc-950/30 border-b border-zinc-100 dark:border-zinc-800/80">
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="py-2.5 pl-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
-                    Miembro
-                  </TableHead>
-                  <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
-                    Email
-                  </TableHead>
-                  <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
-                    Rol
-                  </TableHead>
-                  <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
-                    Fecha Ingreso
-                  </TableHead>
-                  <TableHead className="py-2.5 text-right pr-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
-                    Acciones
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
-                {filteredProfiles.map((user) => (
-                  <TableRow key={user.id} className="hover:bg-zinc-50/30 dark:hover:bg-zinc-800/20">
-                    <TableCell className="py-3 pl-6 font-semibold text-zinc-850 dark:text-zinc-150">
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-350 border border-zinc-200 dark:border-zinc-700">
-                          {getInitials(user.name, user.email)}
-                        </div>
-                        <span className="truncate max-w-[150px] sm:max-w-xs">
-                          {user.name || 'Invitado pre-cargado'}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-zinc-500 dark:text-zinc-400">
-                      {user.email || 'N/A'}
-                    </TableCell>
-                    <TableCell className="py-3 text-xs">
-                      {user.role === 'admin' ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950">
-                          Administrador
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-zinc-100 text-zinc-600 border border-zinc-200 dark:bg-zinc-850 dark:text-zinc-350 dark:border-zinc-800">
-                          empleado/a
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-zinc-400">
-                      {formatDate(user.created_at)}
-                    </TableCell>
-                    <TableCell className="py-3 text-right pr-6 text-xs">
-                      {user.id !== currentUserId && (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openEdit(user)}
-                            className="h-7 w-7 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
-                          >
-                            <Edit className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openDelete(user)}
-                            className="h-7 w-7 text-zinc-500 hover:text-red-650 hover:bg-red-50 dark:text-zinc-400 dark:hover:text-red-400 dark:hover:bg-red-950/20 rounded-lg cursor-pointer"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </CardContent>
-
-      {/* Edit Employee Modal */}
-      <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
-        <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
-          <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
-            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
-              Editar Perfil de Empleado
-            </DialogTitle>
-            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
-              Actualiza el nombre y correo Gmail del miembro del equipo.
-            </DialogDescription>
-          </DialogHeader>
-
-          <form onSubmit={handleEditUser} className="space-y-4 pt-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-emp-name" className="text-xs font-semibold text-zinc-650 dark:text-zinc-300">
-                Nombre Completo
-              </Label>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search bar */}
+            <div className="relative w-full sm:w-56">
+              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-zinc-400" />
               <Input
-                id="edit-emp-name"
-                placeholder="Ej. María González"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                required
-                className="h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
+                placeholder="Buscar miembro..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-8 pr-3 h-8 bg-zinc-50/50 border-zinc-200 focus-visible:ring-zinc-400 dark:bg-zinc-950/30 dark:border-zinc-850 rounded-lg text-xs"
               />
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-emp-email" className="text-xs font-semibold text-zinc-650 dark:text-zinc-300">
-                Correo Electrónico (Gmail)
-              </Label>
-              <div className="relative">
-                <Mail className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-400" />
+            {/* Invitation Dialog Trigger */}
+            <Dialog open={isDialogOpen} onOpenChange={(open) => {
+              setIsDialogOpen(open)
+              if (!open) {
+                setErrorMsg(null)
+              }
+            }}>
+              <DialogTrigger render={
+                <Button size="sm" className="h-8 gap-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold">
+                  <UserPlus className="h-4 w-4" />
+                  Registrar Gmail
+                </Button>
+              } />
+
+              <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
+                <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
+                  <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
+                    Pre-cargar empleado/a
+                  </DialogTitle>
+                  <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+                    Registra el correo Gmail de la empleado/a. Cuando ella inicie sesión con Google, se unirá automáticamente a esta tienda con rol de empleado/a.
+                  </DialogDescription>
+                </DialogHeader>
+
+                {/* Form */}
+                <form onSubmit={handleSubmitInvite} className="space-y-4 pt-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="name" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                      Nombre Completo
+                    </Label>
+                    <Input
+                      id="name"
+                      placeholder="Ej. María González"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      required
+                      className="h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="email" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                      Correo Electrónico (Gmail)
+                    </Label>
+                    <div className="relative">
+                      <Mail className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-400" />
+                      <Input
+                        id="email"
+                        type="email"
+                        placeholder="ejemplo@gmail.com"
+                        value={newEmail}
+                        onChange={(e) => setNewEmail(e.target.value)}
+                        required
+                        className="pl-9 h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Validation error only — shown before submit */}
+                  {errorMsg && (
+                    <div className="flex items-start gap-2 p-3 text-xs text-red-600 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
+                      <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+                      <span>{errorMsg}</span>
+                    </div>
+                  )}
+
+                  <DialogFooter className="pt-2">
+                    <Button
+                      type="submit"
+                      disabled={submitting}
+                      className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
+                    >
+                      {submitting ? 'Guardando...' : 'Pre-cargar empleado/a'}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="p-4 space-y-3">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : filteredProfiles.length === 0 ? (
+            <div className="py-12 text-center text-xs text-zinc-400">
+              No se encontraron miembros de equipo.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader className="bg-zinc-50/75 dark:bg-zinc-950/30 border-b border-zinc-100 dark:border-zinc-800/80">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="py-2.5 pl-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                      Miembro
+                    </TableHead>
+                    <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                      Email
+                    </TableHead>
+                    <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                      Rol
+                    </TableHead>
+                    <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                      Fecha Ingreso
+                    </TableHead>
+                    <TableHead className="py-2.5 text-right pr-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                      Acciones
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
+                  {filteredProfiles.map((user) => (
+                    <TableRow key={user.id} className="hover:bg-zinc-50/30 dark:hover:bg-zinc-800/20">
+                      <TableCell className="py-3 pl-6 font-semibold text-zinc-850 dark:text-zinc-150">
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-350 border border-zinc-200 dark:border-zinc-700">
+                            {getInitials(user.name, user.email)}
+                          </div>
+                          <span className="truncate max-w-[150px] sm:max-w-xs">
+                            {user.name || 'Invitado pre-cargado'}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="py-3 text-xs text-zinc-500 dark:text-zinc-400">
+                        {user.email || 'N/A'}
+                      </TableCell>
+                      <TableCell className="py-3 text-xs">
+                        {user.role === 'admin' ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950">
+                            Administrador
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-zinc-100 text-zinc-600 border border-zinc-200 dark:bg-zinc-850 dark:text-zinc-350 dark:border-zinc-800">
+                            empleado/a
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="py-3 text-xs text-zinc-400">
+                        {formatDate(user.created_at)}
+                      </TableCell>
+                      <TableCell className="py-3 text-right pr-6 text-xs">
+                        {user.id !== currentUserId && (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => openEdit(user)}
+                              className="h-7 w-7 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                            >
+                              <Edit className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => openDelete(user)}
+                              className="h-7 w-7 text-zinc-500 hover:text-red-650 hover:bg-red-50 dark:text-zinc-400 dark:hover:text-red-400 dark:hover:bg-red-950/20 rounded-lg cursor-pointer"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+
+        {/* Edit Employee Modal */}
+        <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
+          <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
+            <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
+              <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
+                Editar Perfil de Empleado
+              </DialogTitle>
+              <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+                Actualiza el nombre y correo Gmail del miembro del equipo.
+              </DialogDescription>
+            </DialogHeader>
+
+            <form onSubmit={handleEditUser} className="space-y-4 pt-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-emp-name" className="text-xs font-semibold text-zinc-650 dark:text-zinc-300">
+                  Nombre Completo
+                </Label>
                 <Input
-                  id="edit-emp-email"
-                  type="email"
-                  placeholder="ejemplo@gmail.com"
-                  value={editEmail}
-                  onChange={(e) => setEditEmail(e.target.value)}
+                  id="edit-emp-name"
+                  placeholder="Ej. María González"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
                   required
-                  className="pl-9 h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
+                  className="h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
                 />
               </div>
-            </div>
 
-            {errorMsg && (
-              <div className="flex items-start gap-2 p-3 text-xs text-red-650 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
-                <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{errorMsg}</span>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-emp-email" className="text-xs font-semibold text-zinc-650 dark:text-zinc-300">
+                  Correo Electrónico (Gmail)
+                </Label>
+                <div className="relative">
+                  <Mail className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-400" />
+                  <Input
+                    id="edit-emp-email"
+                    type="email"
+                    placeholder="ejemplo@gmail.com"
+                    value={editEmail}
+                    onChange={(e) => setEditEmail(e.target.value)}
+                    required
+                    className="pl-9 h-9 border-zinc-200 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm"
+                  />
+                </div>
               </div>
-            )}
 
-            {successMsg && (
-              <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
-                <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{successMsg}</span>
-              </div>
-            )}
+              {errorMsg && (
+                <div className="flex items-start gap-2 p-3 text-xs text-red-650 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
+                  <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
 
-            <DialogFooter className="pt-2">
+              <DialogFooter className="pt-2">
+                <Button
+                  type="submit"
+                  className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
+                >
+                  Actualizar Empleado
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete Employee Confirmation Modal */}
+        <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+          <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
+            <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
+              <DialogTitle className="text-base font-bold text-red-600 dark:text-red-400 flex items-center gap-2">
+                <ShieldAlert className="h-5 w-5" />
+                ¿Confirmas eliminar este empleado?
+              </DialogTitle>
+              <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+                Esta acción eliminará de forma permanente al empleado <strong>{selectedUser?.name}</strong> de la base de datos y de la autenticación de Supabase. El usuario ya no podrá iniciar sesión.
+              </DialogDescription>
+            </DialogHeader>
+
+            <DialogFooter className="pt-4 flex gap-2 justify-end">
               <Button
-                type="submit"
-                disabled={submitting}
-                className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsDeleteOpen(false)}
+                className="h-9 px-4 rounded-lg border-zinc-200 text-zinc-650 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-350 dark:hover:bg-zinc-950 cursor-pointer text-xs font-semibold"
               >
-                {submitting ? 'Guardando...' : 'Actualizar Empleado'}
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDeleteUser}
+                className="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-500 text-white dark:bg-red-750 dark:hover:bg-red-700 cursor-pointer text-xs font-semibold"
+              >
+                Sí, Eliminar
               </Button>
             </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Employee Confirmation Modal */}
-      <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
-        <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-850 p-6 rounded-xl shadow-lg">
-          <DialogHeader className="space-y-1.5 pb-2 border-b border-zinc-100 dark:border-zinc-800">
-            <DialogTitle className="text-base font-bold text-red-600 dark:text-red-400 flex items-center gap-2">
-              <ShieldAlert className="h-5 w-5" />
-              ¿Confirmas eliminar este empleado?
-            </DialogTitle>
-            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
-              Esta acción eliminará de forma permanente al empleado <strong>{selectedUser?.name}</strong> de la base de datos y de la autenticación de Supabase. El usuario ya no podrá iniciar sesión.
-            </DialogDescription>
-          </DialogHeader>
-
-          {errorMsg && (
-            <div className="flex items-start gap-2 p-3 text-xs text-red-655 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
-              <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
-
-          {successMsg && (
-            <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
-              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>{successMsg}</span>
-            </div>
-          )}
-
-          <DialogFooter className="pt-4 flex gap-2 justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={submitting}
-              onClick={() => setIsDeleteOpen(false)}
-              className="h-9 px-4 rounded-lg border-zinc-200 text-zinc-650 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-350 dark:hover:bg-zinc-950 cursor-pointer text-xs font-semibold"
-            >
-              Cancelar
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={submitting}
-              onClick={handleDeleteUser}
-              className="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-500 text-white dark:bg-red-750 dark:hover:bg-red-700 cursor-pointer text-xs font-semibold"
-            >
-              {submitting ? 'Eliminando...' : 'Sí, Eliminar'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </Card>
+          </DialogContent>
+        </Dialog>
+      </Card>
+    </>
   )
 }

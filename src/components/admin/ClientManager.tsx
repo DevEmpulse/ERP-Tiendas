@@ -16,7 +16,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Contact, UserPlus, Search, Phone, Edit, Trash2, ShieldAlert, CheckCircle2 } from 'lucide-react'
+import { Contact, UserPlus, Search, Phone, Edit, Trash2, ShieldAlert } from 'lucide-react'
+import { useToast, Toaster } from '@/components/ui/toast'
 
 interface Client {
   id: string
@@ -48,8 +49,8 @@ export function ClientManager({ storeId }: ClientManagerProps) {
   const [clientPhone, setClientPhone] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
+  const { toasts, toast, dismiss } = useToast()
   const supabase = createClient()
 
   // Fetch clients
@@ -86,33 +87,27 @@ export function ClientManager({ storeId }: ClientManagerProps) {
       return
     }
 
-    setSubmitting(true)
+    // Optimistic: close modal & reset form immediately
+    const name = clientName.trim()
+    const phone = clientPhone.trim() || null
+    setIsAddOpen(false)
+    setClientName('')
+    setClientPhone('')
     setErrorMsg(null)
-    setSuccessMsg(null)
+    setSubmitting(true)
 
     try {
       const { error } = await supabase
         .from('clients')
-        .insert({
-          store_id: storeId,
-          name: clientName.trim(),
-          phone: clientPhone.trim() || null
-        })
+        .insert({ store_id: storeId, name, phone })
 
       if (error) throw error
 
-      setSuccessMsg('Cliente creado con éxito.')
-      setClientName('')
-      setClientPhone('')
+      toast('Cliente creado con éxito.', 'success')
       await fetchClients()
-
-      setTimeout(() => {
-        setIsAddOpen(false)
-        setSuccessMsg(null)
-      }, 1500)
     } catch (err: any) {
       console.error('Error creating client:', err)
-      setErrorMsg(err.message || 'Error al guardar el cliente.')
+      toast(err.message || 'Error al guardar el cliente.', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -128,32 +123,28 @@ export function ClientManager({ storeId }: ClientManagerProps) {
       return
     }
 
-    setSubmitting(true)
+    // Optimistic: close modal immediately
+    const id = selectedClient.id
+    const name = clientName.trim()
+    const phone = clientPhone.trim() || null
+    setIsEditOpen(false)
+    setSelectedClient(null)
     setErrorMsg(null)
-    setSuccessMsg(null)
+    setSubmitting(true)
 
     try {
       const { error } = await supabase
         .from('clients')
-        .update({
-          name: clientName.trim(),
-          phone: clientPhone.trim() || null
-        })
-        .eq('id', selectedClient.id)
+        .update({ name, phone })
+        .eq('id', id)
 
       if (error) throw error
 
-      setSuccessMsg('Cliente actualizado con éxito.')
+      toast('Cliente actualizado con éxito.', 'success')
       await fetchClients()
-
-      setTimeout(() => {
-        setIsEditOpen(false)
-        setSuccessMsg(null)
-        setSelectedClient(null)
-      }, 1500)
     } catch (err: any) {
       console.error('Error updating client:', err)
-      setErrorMsg(err.message || 'Error al actualizar el cliente.')
+      toast(err.message || 'Error al actualizar el cliente.', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -163,29 +154,27 @@ export function ClientManager({ storeId }: ClientManagerProps) {
   const handleDeleteClient = async () => {
     if (!selectedClient) return
 
+    // Optimistic: close modal immediately, remove from list
+    const id = selectedClient.id
+    const name = selectedClient.name
+    setIsDeleteOpen(false)
+    setSelectedClient(null)
+    setClients(prev => prev.filter(c => c.id !== id))
     setSubmitting(true)
-    setErrorMsg(null)
-    setSuccessMsg(null)
 
     try {
       const { error } = await supabase
         .from('clients')
         .delete()
-        .eq('id', selectedClient.id)
+        .eq('id', id)
 
       if (error) throw error
 
-      setSuccessMsg('Cliente eliminado con éxito.')
-      await fetchClients()
-
-      setTimeout(() => {
-        setIsDeleteOpen(false)
-        setSuccessMsg(null)
-        setSelectedClient(null)
-      }, 1500)
+      toast(`Cliente "${name}" eliminado.`, 'success')
     } catch (err: any) {
       console.error('Error deleting client:', err)
-      setErrorMsg(err.message || 'Error al eliminar el cliente.')
+      toast(err.message || 'Error al eliminar el cliente.', 'error')
+      await fetchClients() // restore on error
     } finally {
       setSubmitting(false)
     }
@@ -197,7 +186,6 @@ export function ClientManager({ storeId }: ClientManagerProps) {
     setClientName(client.name || '')
     setClientPhone(client.phone || '')
     setErrorMsg(null)
-    setSuccessMsg(null)
     setIsEditOpen(true)
   }
 
@@ -205,7 +193,6 @@ export function ClientManager({ storeId }: ClientManagerProps) {
   const openDelete = (client: Client) => {
     setSelectedClient(client)
     setErrorMsg(null)
-    setSuccessMsg(null)
     setIsDeleteOpen(true)
   }
 
@@ -231,6 +218,8 @@ export function ClientManager({ storeId }: ClientManagerProps) {
   }
 
   return (
+    <>
+    <Toaster toasts={toasts} dismiss={dismiss} />
     <Card className="border border-zinc-200/80 bg-white shadow-xs dark:border-zinc-800/50 dark:bg-zinc-900 rounded-xl overflow-hidden animate-fade-in">
       <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-3 sm:space-y-0 pb-4 border-b border-zinc-100 dark:border-zinc-800/80">
         <div>
@@ -261,7 +250,6 @@ export function ClientManager({ storeId }: ClientManagerProps) {
               setClientName('')
               setClientPhone('')
               setErrorMsg(null)
-              setSuccessMsg(null)
               setIsAddOpen(true)
             }}
             size="sm"
@@ -393,20 +381,12 @@ export function ClientManager({ storeId }: ClientManagerProps) {
               </div>
             )}
 
-            {successMsg && (
-              <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
-                <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{successMsg}</span>
-              </div>
-            )}
-
             <DialogFooter className="pt-2">
               <Button
                 type="submit"
-                disabled={submitting}
                 className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
               >
-                {submitting ? 'Guardando...' : 'Crear Cliente'}
+                Crear Cliente
               </Button>
             </DialogFooter>
           </form>
@@ -456,27 +436,12 @@ export function ClientManager({ storeId }: ClientManagerProps) {
               </div>
             </div>
 
-            {errorMsg && (
-              <div className="flex items-start gap-2 p-3 text-xs text-red-650 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
-                <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{errorMsg}</span>
-              </div>
-            )}
-
-            {successMsg && (
-              <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
-                <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{successMsg}</span>
-              </div>
-            )}
-
             <DialogFooter className="pt-2">
               <Button
                 type="submit"
-                disabled={submitting}
                 className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
               >
-                {submitting ? 'Guardando...' : 'Actualizar Cliente'}
+                Actualizar Cliente
               </Button>
             </DialogFooter>
           </form>
@@ -496,25 +461,10 @@ export function ClientManager({ storeId }: ClientManagerProps) {
             </DialogDescription>
           </DialogHeader>
 
-          {errorMsg && (
-            <div className="flex items-start gap-2 p-3 text-xs text-red-655 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
-              <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
-
-          {successMsg && (
-            <div className="flex items-start gap-2 p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-250/50 dark:text-emerald-400 dark:bg-emerald-950/20 dark:border-emerald-900/30 rounded-lg font-medium">
-              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>{successMsg}</span>
-            </div>
-          )}
-
           <DialogFooter className="pt-4 flex gap-2 justify-end">
             <Button
               variant="outline"
               size="sm"
-              disabled={submitting}
               onClick={() => setIsDeleteOpen(false)}
               className="h-9 px-4 rounded-lg border-zinc-200 text-zinc-650 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-350 dark:hover:bg-zinc-950 cursor-pointer text-xs font-semibold"
             >
@@ -523,15 +473,15 @@ export function ClientManager({ storeId }: ClientManagerProps) {
             <Button
               variant="destructive"
               size="sm"
-              disabled={submitting}
               onClick={handleDeleteClient}
               className="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-500 text-white dark:bg-red-750 dark:hover:bg-red-700 cursor-pointer text-xs font-semibold"
             >
-              {submitting ? 'Eliminando...' : 'Sí, Eliminar'}
+              Sí, Eliminar
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </Card>
+    </>
   )
 }

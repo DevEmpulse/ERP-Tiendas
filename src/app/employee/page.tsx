@@ -17,25 +17,26 @@ interface Profile {
 export default function EmployeePage() {
   const router = useRouter()
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [storeName, setStoreName] = useState<string>('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const checkAuth = async () => {
       const supabase = createClient()
       
-      // Get the current user session
-      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      // Use getSession (reads from cookie — no network round-trip)
+      const { data: { session } } = await supabase.auth.getSession()
 
-      if (userError || !user) {
+      if (!session?.user) {
         router.push('/login')
         return
       }
 
-      // Fetch user profile to get store_id and role
+      // Single query: profile + store name via join
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select('*')
-        .eq('id', user.id)
+        .select('id, store_id, name, role, email, stores(name)')
+        .eq('id', session.user.id)
         .single()
 
       if (profileError || !profileData) {
@@ -44,14 +45,14 @@ export default function EmployeePage() {
         return
       }
 
-      // Check if user has employee or admin access
       if (profileData.role !== 'employee' && profileData.role !== 'admin') {
-        console.error('User does not have employee or admin access')
         router.push('/login')
         return
       }
 
-      setProfile(profileData)
+      const { stores, ...profile } = profileData as any
+      setProfile(profile)
+      setStoreName(stores?.name ?? '')
       setLoading(false)
     }
 
@@ -121,7 +122,7 @@ export default function EmployeePage() {
       <div className="absolute top-[-5%] left-[-5%] h-[250px] w-[250px] rounded-full bg-neutral-200/30 blur-[80px] dark:bg-neutral-800/10 pointer-events-none" />
       <div className="absolute bottom-[-5%] right-[-5%] h-[250px] w-[250px] rounded-full bg-zinc-200/30 blur-[80px] dark:bg-zinc-800/10 pointer-events-none" />
       
-      {profile && <EmployeeDashboard profile={profile} />}
+      {profile && <EmployeeDashboard profile={profile} storeName={storeName} />}
     </div>
   )
 }

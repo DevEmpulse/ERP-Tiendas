@@ -9,6 +9,7 @@ interface KpiCardsProps {
   dailySalesCount: number
   previousIncome?: number // Optional: for showing growth/trend compared to yesterday or average
   highlightedSaleIds?: string[]
+  showAmounts?: boolean
 }
 
 export function KpiCards({ 
@@ -16,7 +17,8 @@ export function KpiCards({
   dailyIncome, 
   dailySalesCount, 
   previousIncome = 0,
-  highlightedSaleIds = []
+  highlightedSaleIds = [],
+  showAmounts = true
 }: KpiCardsProps) {
   const [isIncomeFlashing, setIsIncomeFlashing] = useState(false)
   const [isCountFlashing, setIsCountFlashing] = useState(false)
@@ -122,7 +124,7 @@ export function KpiCards({
             <span className={`text-4xl font-bold tracking-tight font-sans transition-colors duration-500 ${
               isIncomeFlashing ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-900 dark:text-zinc-50'
             }`}>
-              {formatCurrency(dailyIncome)}
+              {showAmounts ? formatCurrency(dailyIncome) : '••••'}
             </span>
             <span className="flex items-center text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/20">
               <TrendingUp className="mr-1 h-3.5 w-3.5" />
@@ -183,7 +185,7 @@ export function KpiCards({
           
           <div className="mt-3 text-xs text-zinc-400">
             Promedio por venta: <span className="font-semibold text-zinc-700 dark:text-zinc-300">
-              {dailySalesCount > 0 ? formatCurrency(Math.round(dailyIncome / dailySalesCount)) : formatCurrency(0)}
+              {showAmounts ? (dailySalesCount > 0 ? formatCurrency(Math.round(dailyIncome / dailySalesCount)) : formatCurrency(0)) : '••••'}
             </span>
           </div>
         </CardContent>

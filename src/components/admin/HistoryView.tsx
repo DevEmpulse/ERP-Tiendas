@@ -12,6 +12,7 @@ interface HistoryViewProps {
   storeId?: string | null
   storeName?: string
   onSalesChange?: () => void
+  showAmounts?: boolean
 }
 
 export function HistoryView({
@@ -20,7 +21,8 @@ export function HistoryView({
   employees = [],
   storeId = null,
   storeName = 'ERP Tiendas',
-  onSalesChange = () => {}
+  onSalesChange = () => {},
+  showAmounts = true
 }: HistoryViewProps) {
   return (
     <div className="space-y-8 animate-fade-in">
@@ -43,6 +45,7 @@ export function HistoryView({
         storeId={storeId}
         storeName={storeName}
         onSalesChange={onSalesChange}
+        showAmounts={showAmounts}
       />
     </div>
   )

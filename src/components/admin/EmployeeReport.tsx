@@ -17,7 +17,7 @@ interface EmployeePerf {
   shareOfSales: number // percentage of total store sales
 }
 
-export function EmployeeReport() {
+export function EmployeeReport({ showAmounts = true }: { showAmounts?: boolean }) {
   const [filterType, setFilterType] = useState<'day' | 'month'>('month')
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   const [loading, setLoading] = useState(true)
@@ -265,7 +265,7 @@ export function EmployeeReport() {
                     <div className="flex justify-between items-baseline">
                       <span className="text-xs text-zinc-450">Monto Facturado:</span>
                       <span className="text-xl font-extrabold text-zinc-900 dark:text-zinc-50">
-                        {formatCurrency(emp.totalAmount)}
+                        {showAmounts ? formatCurrency(emp.totalAmount) : '••••'}
                       </span>
                     </div>
                     <div className="flex justify-between items-center text-xs text-zinc-500">

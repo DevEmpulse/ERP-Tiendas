@@ -13,7 +13,7 @@ import { StockView } from '@/components/admin/StockView'
 import { Button } from '@/components/ui/button'
 import { groupSales } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Menu, LogOut, Store, User, ShieldCheck, Eye, EyeOff } from 'lucide-react'
+import { Menu, LogOut, Store, User, ShieldCheck } from 'lucide-react'
 
 interface Profile {
   id: string
@@ -65,23 +65,7 @@ export default function AdminPage() {
   const [refreshSalesKey, setRefreshSalesKey] = useState(0)
   const triggerRefreshSales = () => setRefreshSalesKey(prev => prev + 1)
 
-  // Visibility toggle for sold amounts
-  const [showAmounts, setShowAmounts] = useState<boolean>(true)
 
-  useEffect(() => {
-    const stored = localStorage.getItem('showAmounts')
-    if (stored !== null) {
-      setShowAmounts(stored === 'true')
-    }
-  }, [])
-
-  const toggleShowAmounts = () => {
-    setShowAmounts(prev => {
-      const next = !prev
-      localStorage.setItem('showAmounts', String(next))
-      return next
-    })
-  }
 
   // Sign out handler
   const handleLogout = async () => {
@@ -315,7 +299,6 @@ export default function AdminPage() {
             storeId={userProfile?.store_id || null}
             storeName={storeInfo?.name || 'Mi Tienda'}
             onSalesChange={triggerRefreshSales}
-            showAmounts={showAmounts}
           />
         )
       case 'history':
@@ -327,11 +310,10 @@ export default function AdminPage() {
             storeId={userProfile?.store_id || null}
             storeName={storeInfo?.name || 'Mi Tienda'}
             onSalesChange={triggerRefreshSales}
-            showAmounts={showAmounts}
           />
         )
       case 'employees':
-        return <EmployeesView showAmounts={showAmounts} />
+        return <EmployeesView />
       case 'clients':
         return <ClientManager storeId={userProfile?.store_id || null} />
       case 'staff':
@@ -426,15 +408,6 @@ export default function AdminPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Eye visibility toggle */}
-            <button
-              onClick={toggleShowAmounts}
-              className="p-1.5 sm:p-2 rounded-xl text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-50 border border-zinc-250/60 dark:border-zinc-800/80 cursor-pointer transition-colors shadow-2xs"
-              title={showAmounts ? "Ocultar montos" : "Mostrar montos"}
-            >
-              {showAmounts ? <EyeOff className="h-4 w-4 sm:h-4.5 sm:w-4.5" /> : <Eye className="h-4 w-4 sm:h-4.5 sm:w-4.5" />}
-            </button>
-
             {/* Admin Badge */}
             <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 border border-zinc-800 dark:border-zinc-200 shadow-2xs">
               <ShieldCheck className="h-3.5 w-3.5" />

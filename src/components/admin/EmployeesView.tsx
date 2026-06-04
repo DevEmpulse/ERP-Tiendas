@@ -3,11 +3,7 @@
 import { EmployeeReport } from '@/components/admin/EmployeeReport'
 import { TrendingUp } from 'lucide-react'
 
-interface EmployeesViewProps {
-  showAmounts?: boolean
-}
-
-export function EmployeesView({ showAmounts = true }: EmployeesViewProps) {
+export function EmployeesView() {
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Title Header */}
@@ -22,7 +18,7 @@ export function EmployeesView({ showAmounts = true }: EmployeesViewProps) {
       </div>
 
       {/* Main Employee Performance Report component */}
-      <EmployeeReport showAmounts={showAmounts} />
+      <EmployeeReport />
     </div>
   )
 }

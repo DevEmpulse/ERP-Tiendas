@@ -21,7 +21,6 @@ interface DashboardViewProps {
   storeId?: string | null
   storeName?: string
   onSalesChange?: () => void
-  showAmounts?: boolean
 }
 
 export function DashboardView({
@@ -34,8 +33,7 @@ export function DashboardView({
   employees = [],
   storeId = null,
   storeName = 'ERP Tiendas',
-  onSalesChange = () => {},
-  showAmounts = true
+  onSalesChange = () => {}
 }: DashboardViewProps) {
   const [isAddSaleOpen, setIsAddSaleOpen] = useState(false)
 
@@ -94,7 +92,6 @@ export function DashboardView({
         dailySalesCount={dailySalesCount}
         previousIncome={previousIncome}
         highlightedSaleIds={highlightedSaleIds}
-        showAmounts={showAmounts}
       />
 
       {/* Today's Sales Table */}
@@ -105,7 +102,6 @@ export function DashboardView({
         employees={employees}
         storeId={storeId}
         onSalesChange={onSalesChange}
-        showAmounts={showAmounts}
       />
 
       {/* Sale Creator Modal */}

@@ -18,7 +18,6 @@ interface SalesHistoryProps {
   storeId?: string | null
   storeName?: string
   onSalesChange?: () => void
-  showAmounts?: boolean
 }
 
 // Robust helper to extract local YYYY-MM-DD from UTC ISO string
@@ -54,8 +53,7 @@ export function SalesHistory({
   employees = [],
   storeId = null,
   storeName = 'ERP Tiendas',
-  onSalesChange = () => {},
-  showAmounts = true
+  onSalesChange = () => {}
 }: SalesHistoryProps) {
   const [startDateStr, setStartDateStr] = useState(getLocalDaysAgoStr(30))
   const [endDateStr, setEndDateStr] = useState(getLocalTodayStr())
@@ -311,7 +309,7 @@ export function SalesHistory({
             <DollarSign className="h-4 w-4 text-emerald-500" />
           </div>
           <div className="mt-2 text-xl sm:text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-            {showAmounts ? formatCurrency(stats.total) : '••••'}
+            {formatCurrency(stats.total)}
           </div>
           <div className="text-[10px] text-zinc-400 mt-1">En el rango seleccionado</div>
         </Card>
@@ -335,7 +333,7 @@ export function SalesHistory({
             <TrendingUp className="h-4 w-4 text-purple-500" />
           </div>
           <div className="mt-2 text-xl sm:text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-            {showAmounts ? formatCurrency(stats.avg) : '••••'}
+            {formatCurrency(stats.avg)}
           </div>
           <div className="text-[10px] text-zinc-400 mt-1">Valor medio por venta</div>
         </Card>
@@ -349,15 +347,15 @@ export function SalesHistory({
           <div className="space-y-1.5 mt-2">
             <div className="flex justify-between items-center text-[11px]">
               <span className="text-zinc-500">Efectivo:</span>
-              <span className="font-semibold text-emerald-600 dark:text-emerald-400">{showAmounts ? formatCurrency(stats.cash) : '••••'}</span>
+              <span className="font-semibold text-emerald-600 dark:text-emerald-400">{formatCurrency(stats.cash)}</span>
             </div>
             <div className="flex justify-between items-center text-[11px]">
               <span className="text-zinc-500">Transf:</span>
-              <span className="font-semibold text-blue-600 dark:text-blue-400">{showAmounts ? formatCurrency(stats.transfer) : '••••'}</span>
+              <span className="font-semibold text-blue-600 dark:text-blue-400">{formatCurrency(stats.transfer)}</span>
             </div>
             <div className="flex justify-between items-center text-[11px]">
               <span className="text-zinc-500">Tarjeta:</span>
-              <span className="font-semibold text-purple-600 dark:text-purple-400">{showAmounts ? formatCurrency(stats.card) : '••••'}</span>
+              <span className="font-semibold text-purple-600 dark:text-purple-400">{formatCurrency(stats.card)}</span>
             </div>
           </div>
         </Card>
@@ -412,16 +410,16 @@ export function SalesHistory({
                       {row.count}
                     </TableCell>
                     <TableCell className="py-3 text-right text-emerald-600 dark:text-emerald-400 font-medium">
-                      {showAmounts ? formatCurrency(row.cash) : '••••'}
+                      {formatCurrency(row.cash)}
                     </TableCell>
                     <TableCell className="py-3 text-right text-blue-600 dark:text-blue-400 font-medium">
-                      {showAmounts ? formatCurrency(row.transfer) : '••••'}
+                      {formatCurrency(row.transfer)}
                     </TableCell>
                     <TableCell className="py-3 text-right text-purple-600 dark:text-purple-400 font-medium">
-                      {showAmounts ? formatCurrency(row.card) : '••••'}
+                      {formatCurrency(row.card)}
                     </TableCell>
                     <TableCell className="py-3 text-right pr-6 font-bold text-zinc-900 dark:text-zinc-50">
-                      {showAmounts ? formatCurrency(row.total) : '••••'}
+                      {formatCurrency(row.total)}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -438,7 +436,6 @@ export function SalesHistory({
         employees={employees}
         storeId={storeId}
         onSalesChange={onSalesChange}
-        showAmounts={showAmounts}
       />
     </div>
   )

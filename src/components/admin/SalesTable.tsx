@@ -28,11 +28,10 @@ interface SalesTableProps {
   employees?: any[]
   storeId?: string | null
   onSalesChange?: () => void
-  showAmounts?: boolean
 }
 
 // Mini items list table component matching CANT | DETALLE | P.UNIT | IMPORTE receipt format
-function ItemsTable({ items, showAmounts = true }: { items: SaleItem[]; showAmounts?: boolean }) {
+function ItemsTable({ items }: { items: SaleItem[] }) {
   const formatCurrency = (value: number | string) => {
     return new Intl.NumberFormat('es-CL', {
       style: 'currency',
@@ -57,8 +56,8 @@ function ItemsTable({ items, showAmounts = true }: { items: SaleItem[]; showAmou
             <tr key={idx} className="hover:bg-zinc-100/30 dark:hover:bg-zinc-800/10 transition-colors">
               <td className="py-1 px-1.5 text-center font-extrabold text-zinc-700 dark:text-zinc-350 border-r border-zinc-200/30 dark:border-zinc-800/30">{item.cant}</td>
               <td className="py-1 px-2.5 text-zinc-650 dark:text-zinc-300 truncate max-w-[130px] font-medium border-r border-zinc-200/30 dark:border-zinc-800/30" title={item.detalle}>{item.detalle}</td>
-              <td className="py-1 px-1.5 text-right text-zinc-550 dark:text-zinc-400 border-r border-zinc-200/30 dark:border-zinc-800/30">{showAmounts ? formatCurrency(item.p_unit) : '••••'}</td>
-              <td className="py-1 px-2 text-right font-bold text-zinc-900 dark:text-zinc-100">{showAmounts ? formatCurrency(item.importe) : '••••'}</td>
+              <td className="py-1 px-1.5 text-right text-zinc-550 dark:text-zinc-400 border-r border-zinc-200/30 dark:border-zinc-800/30">{formatCurrency(item.p_unit)}</td>
+              <td className="py-1 px-2 text-right font-bold text-zinc-900 dark:text-zinc-100">{formatCurrency(item.importe)}</td>
             </tr>
           ))}
         </tbody>
@@ -73,8 +72,7 @@ export function SalesTable({
   highlightedSaleIds = [],
   employees = [],
   storeId = null,
-  onSalesChange = () => {},
-  showAmounts = true
+  onSalesChange = () => {}
 }: SalesTableProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
@@ -332,7 +330,7 @@ export function SalesTable({
                       </TableCell>
                       <TableCell className="py-3 pr-4">
                         <div className="flex flex-col gap-2">
-                          <ItemsTable items={parseSaleDescription(sale.description, sale.total_amount)} showAmounts={showAmounts} />
+                          <ItemsTable items={parseSaleDescription(sale.description, sale.total_amount)} />
                           {sale.ref_code && (
                             <span className="text-[10px] text-zinc-450 font-bold tracking-wider pl-1">
                               Ref: #{sale.ref_code}
@@ -347,7 +345,7 @@ export function SalesTable({
                               {renderPaymentBadge(p.method)}
                               {sale.is_combined && (
                                 <span className="text-[10px] text-zinc-400 font-semibold bg-zinc-50 dark:bg-zinc-850 px-1 py-0.5 rounded border border-zinc-150 dark:border-zinc-800">
-                                  {showAmounts ? formatCurrency(p.amount) : '••••'}
+                                  {formatCurrency(p.amount)}
                                 </span>
                               )}
                             </div>
@@ -355,7 +353,7 @@ export function SalesTable({
                         </div>
                       </TableCell>
                       <TableCell className="text-right font-bold text-zinc-900 dark:text-zinc-50 py-3">
-                        {showAmounts ? formatCurrency(sale.total_amount) : '••••'}
+                        {formatCurrency(sale.total_amount)}
                       </TableCell>
                       <TableCell className="py-3 text-right pr-6 text-xs">
                         <div className="flex items-center justify-end gap-1.5">
@@ -451,7 +449,7 @@ export function SalesTable({
                 </span>
               ) : (
                 <span>
-                  Esta acción eliminará de forma permanente el registro de venta por <strong>{showAmounts ? formatCurrency(selectedSale?.total_amount || 0) : '••••'}</strong>.
+                  Esta acción eliminará de forma permanente el registro de venta por <strong>{formatCurrency(selectedSale?.total_amount || 0)}</strong>.
                 </span>
               )}
             </DialogDescription>

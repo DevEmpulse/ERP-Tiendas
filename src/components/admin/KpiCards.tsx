@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { DollarSign, ShoppingBag, TrendingUp } from 'lucide-react'
+import { DollarSign, ShoppingBag, TrendingUp, Eye, EyeOff } from 'lucide-react'
 
 interface KpiCardsProps {
   loading: boolean
@@ -9,7 +9,6 @@ interface KpiCardsProps {
   dailySalesCount: number
   previousIncome?: number // Optional: for showing growth/trend compared to yesterday or average
   highlightedSaleIds?: string[]
-  showAmounts?: boolean
 }
 
 export function KpiCards({ 
@@ -17,9 +16,24 @@ export function KpiCards({
   dailyIncome, 
   dailySalesCount, 
   previousIncome = 0,
-  highlightedSaleIds = [],
-  showAmounts = true
+  highlightedSaleIds = []
 }: KpiCardsProps) {
+  const [showIncome, setShowIncome] = useState<boolean>(true)
+
+  useEffect(() => {
+    const stored = localStorage.getItem('showIncome')
+    if (stored !== null) {
+      setShowIncome(stored === 'true')
+    }
+  }, [])
+
+  const toggleShowIncome = () => {
+    setShowIncome(prev => {
+      const next = !prev
+      localStorage.setItem('showIncome', String(next))
+      return next
+    })
+  }
   const [isIncomeFlashing, setIsIncomeFlashing] = useState(false)
   const [isCountFlashing, setIsCountFlashing] = useState(false)
   const [prevIncome, setPrevIncome] = useState(dailyIncome)
@@ -103,8 +117,16 @@ export function KpiCards({
         
         <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
           <div>
-            <CardTitle className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+            <CardTitle className="text-sm font-medium text-zinc-500 dark:text-zinc-400 flex items-center gap-2">
               Ingresos del Día
+              <button
+                type="button"
+                onClick={toggleShowIncome}
+                className="p-1 rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-150 transition-colors cursor-pointer"
+                title={showIncome ? "Ocultar ingresos" : "Mostrar ingresos"}
+              >
+                {showIncome ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
             </CardTitle>
             <CardDescription className="text-xs text-zinc-400">
               Ventas acumuladas hoy
@@ -124,7 +146,7 @@ export function KpiCards({
             <span className={`text-4xl font-bold tracking-tight font-sans transition-colors duration-500 ${
               isIncomeFlashing ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-900 dark:text-zinc-50'
             }`}>
-              {showAmounts ? formatCurrency(dailyIncome) : '••••'}
+              {showIncome ? formatCurrency(dailyIncome) : '••••'}
             </span>
             <span className="flex items-center text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/20">
               <TrendingUp className="mr-1 h-3.5 w-3.5" />
@@ -185,7 +207,7 @@ export function KpiCards({
           
           <div className="mt-3 text-xs text-zinc-400">
             Promedio por venta: <span className="font-semibold text-zinc-700 dark:text-zinc-300">
-              {showAmounts ? (dailySalesCount > 0 ? formatCurrency(Math.round(dailyIncome / dailySalesCount)) : formatCurrency(0)) : '••••'}
+              {dailySalesCount > 0 ? formatCurrency(Math.round(dailyIncome / dailySalesCount)) : formatCurrency(0)}
             </span>
           </div>
         </CardContent>

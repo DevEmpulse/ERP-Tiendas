@@ -10,6 +10,7 @@ import { EmployeesView } from '@/components/admin/EmployeesView'
 import { StaffManagementView } from '@/components/admin/StaffManagementView'
 import { ClientManager } from '@/components/admin/ClientManager'
 import { StockView } from '@/components/admin/StockView'
+import { StoreSettingsView } from '@/components/admin/StoreSettingsView'
 import { Button } from '@/components/ui/button'
 import { groupSales } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -26,6 +27,7 @@ interface Profile {
 interface StoreData {
   id: string
   name: string
+  thermal_paper_width?: '58mm' | '80mm'
 }
 
 interface Sale {
@@ -57,6 +59,7 @@ export default function AdminPage() {
   // Context States
   const [userProfile, setUserProfile] = useState<Profile | null>(null)
   const [storeInfo, setStoreInfo] = useState<StoreData | null>(null)
+  const [paperWidth, setPaperWidth] = useState<'58mm' | '80mm'>('58mm')
   
   // Data States
   const [sales, setSales] = useState<Sale[]>([])
@@ -106,7 +109,7 @@ export default function AdminPage() {
 
         // Fetch store in parallel with setting user profile
         const storePromise = profile.store_id
-          ? supabase.from('stores').select('id, name').eq('id', profile.store_id).single()
+          ? supabase.from('stores').select('id, name, thermal_paper_width').eq('id', profile.store_id).single()
           : Promise.resolve({ data: null, error: null })
 
         setUserProfile(profile as Profile)
@@ -114,6 +117,7 @@ export default function AdminPage() {
         const { data: store, error: sError } = await storePromise
         if (!sError && store) {
           setStoreInfo(store as StoreData)
+          setPaperWidth((store.thermal_paper_width as '58mm' | '80mm') ?? '58mm')
         }
       } catch (err) {
         console.error('Error loading admin context:', err)
@@ -298,6 +302,7 @@ export default function AdminPage() {
             employees={employeesList as any}
             storeId={userProfile?.store_id || null}
             storeName={storeInfo?.name || 'Mi Tienda'}
+            paperWidth={paperWidth}
             onSalesChange={triggerRefreshSales}
           />
         )
@@ -320,6 +325,17 @@ export default function AdminPage() {
         return <StaffManagementView storeId={userProfile?.store_id || null} />
       case 'stock':
         return <StockView storeId={userProfile?.store_id || null} />
+      case 'settings':
+        return (
+          <StoreSettingsView
+            storeId={userProfile?.store_id || null}
+            currentPaperWidth={paperWidth}
+            onPaperWidthChange={(w) => {
+              setPaperWidth(w)
+              setStoreInfo(prev => prev ? { ...prev, thermal_paper_width: w } : prev)
+            }}
+          />
+        )
       default:
         return (
           <div className="py-8 text-center text-sm text-zinc-400">

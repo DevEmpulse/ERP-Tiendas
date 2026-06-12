@@ -1,6 +1,7 @@
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { GroupedSale, parseSaleDescription } from './salesHelper'
+import type { ReceiptData } from '@/components/shared/ReceiptModal'
 
 // Chilean Currency Formatter (e.g., $15.500)
 const formatCurrency = (value: number) => {
@@ -226,4 +227,164 @@ export function generateSalesReportPdf({
 
   // Download the PDF
   doc.save(fileName)
+}
+
+// ─── Individual Receipt PDF ───────────────────────────────────────────────────
+
+export function generateReceiptPdf(data: ReceiptData) {
+  const PAYMENT_LABELS: Record<string, string> = {
+    cash: 'Efectivo',
+    transfer: 'Transferencia',
+    card: 'Tarjeta',
+  }
+
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const pageWidth = doc.internal.pageSize.getWidth()
+
+  // Color palette
+  const zinc900: [number, number, number] = [24, 24, 27]
+  const zinc500: [number, number, number] = [113, 113, 122]
+  const zinc200: [number, number, number] = [228, 228, 231]
+  const zinc100: [number, number, number] = [244, 244, 245]
+  const emerald: [number, number, number] = [16, 185, 129]
+  const white: [number, number, number]   = [255, 255, 255]
+
+  // Parse date/time
+  const formatDateTime = (iso: string) => {
+    try {
+      const d = new Date(iso)
+      const day   = String(d.getDate()).padStart(2, '0')
+      const month = String(d.getMonth() + 1).padStart(2, '0')
+      const year  = d.getFullYear()
+      const hh    = String(d.getHours()).padStart(2, '0')
+      const mm    = String(d.getMinutes()).padStart(2, '0')
+      return `${day}/${month}/${year}  ${hh}:${mm}`
+    } catch { return '' }
+  }
+
+  // ── Header ──────────────────────────────────────────────────────────────────
+  // Dark header bar
+  doc.setFillColor(...zinc900)
+  doc.roundedRect(14, 10, pageWidth - 28, 30, 4, 4, 'F')
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(16)
+  doc.setTextColor(...white)
+  doc.text(data.storeName.toUpperCase(), pageWidth / 2, 21, { align: 'center' })
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8)
+  doc.setTextColor(180, 180, 185)
+  doc.text('COMPROBANTE DE VENTA', pageWidth / 2, 28, { align: 'center' })
+  doc.text(formatDateTime(data.createdAt), pageWidth / 2, 34, { align: 'center' })
+
+  // ── Info grid ───────────────────────────────────────────────────────────────
+  const infoY = 48
+  doc.setFillColor(...zinc100)
+  doc.roundedRect(14, infoY, pageWidth - 28, 22, 3, 3, 'F')
+
+  const col = (pageWidth - 28) / 3
+  const infoItems = [
+    { label: 'VENDEDOR/A', value: data.employeeName || '—' },
+    { label: 'CLIENTE', value: data.clientName || (data.clientPhone ? data.clientPhone : '—') },
+    { label: 'TELÉFONO', value: data.clientPhone || '—' },
+  ]
+  infoItems.forEach((item, i) => {
+    const x = 18 + col * i
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(7)
+    doc.setTextColor(...zinc500)
+    doc.text(item.label, x, infoY + 7)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(9)
+    doc.setTextColor(...zinc900)
+    doc.text(item.value, x, infoY + 14, { maxWidth: col - 4 })
+  })
+
+  // ── Products table ──────────────────────────────────────────────────────────
+  const tableBody = data.products.map(p => [
+    String(p.cant),
+    p.detalle,
+    formatCurrency(p.p_unit),
+    formatCurrency(p.importe),
+  ])
+
+  autoTable(doc, {
+    startY: infoY + 28,
+    head: [['Cant', 'Descripción', 'P. Unitario', 'Importe']],
+    body: tableBody,
+    theme: 'grid',
+    headStyles: {
+      fillColor: zinc900,
+      textColor: white,
+      fontSize: 9,
+      fontStyle: 'bold',
+      halign: 'left',
+    },
+    bodyStyles: {
+      fontSize: 9,
+      textColor: zinc900,
+      valign: 'top',
+      cellPadding: 3,
+    },
+    columnStyles: {
+      0: { cellWidth: 14, halign: 'center' },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 35, halign: 'right' },
+      3: { cellWidth: 35, halign: 'right', fontStyle: 'bold' },
+    },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 14, right: 14 },
+  })
+
+  // ── Total box ──────────────────────────────────────────────────────────────
+  const finalY = (doc as any).lastAutoTable.finalY + 6
+  const totalBoxH = 16
+  doc.setFillColor(...emerald)
+  doc.roundedRect(14, finalY, pageWidth - 28, totalBoxH, 3, 3, 'F')
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(...white)
+  doc.text('TOTAL', 20, finalY + 10)
+  doc.setFontSize(14)
+  doc.text(formatCurrency(data.totalAmount), pageWidth - 18, finalY + 10, { align: 'right' })
+
+  // ── Payment breakdown ──────────────────────────────────────────────────────
+  const payY = finalY + totalBoxH + 8
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(8)
+  doc.setTextColor(...zinc500)
+  doc.text('FORMA DE PAGO', 14, payY)
+
+  doc.setDrawColor(...zinc200)
+  doc.setLineWidth(0.4)
+  doc.line(14, payY + 2, pageWidth - 14, payY + 2)
+
+  data.payments.forEach((p, i) => {
+    const y = payY + 8 + i * 8
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+    doc.setTextColor(...zinc900)
+    const label = PAYMENT_LABELS[p.method] ?? p.method
+    doc.text(label, 18, y)
+    doc.setFont('helvetica', 'bold')
+    doc.text(formatCurrency(p.amount), pageWidth - 18, y, { align: 'right' })
+  })
+
+  // ── Footer ─────────────────────────────────────────────────────────────────
+  const footerY = doc.internal.pageSize.getHeight() - 16
+  doc.setDrawColor(...zinc200)
+  doc.setLineWidth(0.3)
+  doc.line(14, footerY - 4, pageWidth - 14, footerY - 4)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8)
+  doc.setTextColor(...zinc500)
+  doc.text('¡Gracias por su compra!', pageWidth / 2, footerY, { align: 'center' })
+  const now = new Date().toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' })
+  doc.setFontSize(7)
+  doc.text(`Generado: ${now}`, pageWidth / 2, footerY + 6, { align: 'center' })
+
+  // Save
+  const safeDate = formatDateTime(data.createdAt).replace(/[/:, ]+/g, '-').trim()
+  doc.save(`comprobante-${safeDate}.pdf`)
 }

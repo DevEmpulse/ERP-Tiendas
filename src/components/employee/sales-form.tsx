@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Coins, ArrowLeftRight, CreditCard, Phone, Loader2, CheckCircle2, AlertCircle, User, Package, Tags } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
 
 interface PriceRule {
   id: string
@@ -33,9 +34,11 @@ interface SalesFormProps {
     name: string | null
     role: string | null
   }
+  storeName?: string
+  paperWidth?: '58mm' | '80mm'
 }
 
-export default function SalesForm({ profile }: SalesFormProps) {
+export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth = '58mm' }: SalesFormProps) {
   // Product list state
   const [products, setProducts] = useState<ProductItem[]>([
     { id: '1', quantity: '', detail: '', unitPrice: '', importe: '', importeManual: false }
@@ -63,6 +66,10 @@ export default function SalesForm({ profile }: SalesFormProps) {
   // Common states
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+
+  // Receipt modal state
+  const [receiptData, setReceiptData] = useState<ReceiptData | null>(null)
+  const [showReceipt, setShowReceipt] = useState(false)
 
   // Calculations for combined payment
   const cashNum = parseInt(splitAmounts.cash || '0', 10)
@@ -358,17 +365,35 @@ export default function SalesForm({ profile }: SalesFormProps) {
         if (saleError) throw saleError
       }
 
-      // Success feedback
-      showToast('¡Venta registrada con éxito!', 'success')
-      
-      // Clean form fields
-      setProducts([{ id: '1', quantity: '', detail: '', unitPrice: '', importe: '', importeManual: false }])
-      setPaymentMethod('cash')
-      setSplitAmounts({ cash: '', transfer: '', card: '' })
-      setClientName('')
-      setClientPhone('')
-      setShowClientDetails(false)
-      setIsCombined(false)
+      // Build receipt data and open modal
+      const payments: ReceiptData['payments'] = isCombined
+        ? [
+            ...(cashNum > 0    ? [{ method: 'cash'     as const, amount: cashNum }]     : []),
+            ...(transferNum > 0 ? [{ method: 'transfer' as const, amount: transferNum }] : []),
+            ...(cardNum > 0    ? [{ method: 'card'     as const, amount: cardNum }]     : []),
+          ]
+        : [{ method: paymentMethod, amount: productsTotal }]
+
+      const receiptProducts = validProducts.map(p => ({
+        cant: parseInt(p.quantity || '1', 10),
+        detalle: p.detail.trim(),
+        p_unit: parseInt(p.unitPrice || '0', 10),
+        importe: getProductImporte(p),
+      }))
+
+      setReceiptData({
+        storeName,
+        employeeName: profile.name ?? 'Empleado/a',
+        clientName: clientName.trim() || null,
+        clientPhone: clientPhone.trim() || null,
+        createdAt: new Date().toISOString(),
+        products: receiptProducts,
+        payments,
+        totalAmount: productsTotal,
+        isCombined,
+        paperWidth,
+      })
+      setShowReceipt(true)
     } catch (err: any) {
       console.error('Error registering sale:', err)
       showToast(err.message || 'Error al registrar la venta. Inténtalo de nuevo.', 'error')
@@ -384,8 +409,25 @@ export default function SalesForm({ profile }: SalesFormProps) {
     }, 4000)
   }
 
+  // Reset form after closing receipt
+  const handleReceiptClose = () => {
+    setShowReceipt(false)
+    setReceiptData(null)
+    setProducts([{ id: '1', quantity: '', detail: '', unitPrice: '', importe: '', importeManual: false }])
+    setPaymentMethod('cash')
+    setSplitAmounts({ cash: '', transfer: '', card: '' })
+    setClientName('')
+    setClientPhone('')
+    setShowClientDetails(false)
+    setIsCombined(false)
+    showToast('¡Venta registrada con éxito!', 'success')
+  }
+
   return (
     <>
+      {/* Receipt Modal */}
+      <ReceiptModal open={showReceipt} onClose={handleReceiptClose} data={receiptData} />
+
       {/* Toast Notification Container */}
       {toast && (
         <div 

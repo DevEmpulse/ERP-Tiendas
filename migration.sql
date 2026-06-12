@@ -435,3 +435,9 @@ CREATE POLICY "Users can manage price rules in their store" ON public.product_pr
   FOR ALL TO authenticated
   USING (store_id = public.get_current_user_store_id())
   WITH CHECK (store_id = public.get_current_user_store_id());
+
+-- 12. Thermal printer paper width setting per store
+ALTER TABLE public.stores
+  ADD COLUMN IF NOT EXISTS thermal_paper_width text NOT NULL DEFAULT '58mm'
+  CHECK (thermal_paper_width IN ('58mm', '80mm'));
+

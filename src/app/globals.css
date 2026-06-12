@@ -128,3 +128,15 @@
     @apply font-sans;
   }
 }
+
+/* ── Thermal receipt print styles ─────────────────────────────────────────── */
+@media print {
+  /* Hide everything by default when printing from the main page */
+  body > * {
+    display: none !important;
+  }
+  /* Only show elements explicitly marked for printing */
+  .thermal-receipt-print {
+    display: block !important;
+  }
+}

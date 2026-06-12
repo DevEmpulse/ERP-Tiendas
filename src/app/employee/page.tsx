@@ -18,6 +18,7 @@ export default function EmployeePage() {
   const router = useRouter()
   const [profile, setProfile] = useState<Profile | null>(null)
   const [storeName, setStoreName] = useState<string>('')
+  const [paperWidth, setPaperWidth] = useState<'58mm' | '80mm'>('58mm')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -35,7 +36,7 @@ export default function EmployeePage() {
       // Single query: profile + store name via join
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select('id, store_id, name, role, email, stores(name)')
+        .select('id, store_id, name, role, email, stores(name, thermal_paper_width)')
         .eq('id', session.user.id)
         .single()
 
@@ -53,6 +54,7 @@ export default function EmployeePage() {
       const { stores, ...profile } = profileData as any
       setProfile(profile)
       setStoreName(stores?.name ?? '')
+      setPaperWidth((stores?.thermal_paper_width as '58mm' | '80mm') ?? '58mm')
       setLoading(false)
     }
 
@@ -122,7 +124,7 @@ export default function EmployeePage() {
       <div className="absolute top-[-5%] left-[-5%] h-[250px] w-[250px] rounded-full bg-neutral-200/30 blur-[80px] dark:bg-neutral-800/10 pointer-events-none" />
       <div className="absolute bottom-[-5%] right-[-5%] h-[250px] w-[250px] rounded-full bg-zinc-200/30 blur-[80px] dark:bg-zinc-800/10 pointer-events-none" />
       
-      {profile && <EmployeeDashboard profile={profile} storeName={storeName} />}
+      {profile && <EmployeeDashboard profile={profile} storeName={storeName} paperWidth={paperWidth} />}
     </div>
   )
 }

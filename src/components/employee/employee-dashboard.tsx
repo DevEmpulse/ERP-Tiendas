@@ -18,9 +18,10 @@ interface Profile {
 interface EmployeeDashboardProps {
   profile: Profile
   storeName: string
+  paperWidth?: '58mm' | '80mm'
 }
 
-export default function EmployeeDashboard({ profile, storeName }: EmployeeDashboardProps) {
+export default function EmployeeDashboard({ profile, storeName, paperWidth = '58mm' }: EmployeeDashboardProps) {
   const router = useRouter()
   const [logoutLoading, setLogoutLoading] = useState(false)
 
@@ -73,7 +74,7 @@ export default function EmployeeDashboard({ profile, storeName }: EmployeeDashbo
 
         {/* Core Sales Registration Form */}
         <main className="px-2">
-          <SalesForm profile={profile} />
+          <SalesForm profile={profile} storeName={storeName} paperWidth={paperWidth} />
         </main>
       </div>
 

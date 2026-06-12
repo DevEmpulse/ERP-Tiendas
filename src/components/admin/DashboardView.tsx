@@ -20,6 +20,7 @@ interface DashboardViewProps {
   employees?: any[]
   storeId?: string | null
   storeName?: string
+  paperWidth?: '58mm' | '80mm'
   onSalesChange?: () => void
 }
 
@@ -33,6 +34,7 @@ export function DashboardView({
   employees = [],
   storeId = null,
   storeName = 'ERP Tiendas',
+  paperWidth = '58mm',
   onSalesChange = () => {}
 }: DashboardViewProps) {
   const [isAddSaleOpen, setIsAddSaleOpen] = useState(false)
@@ -110,6 +112,8 @@ export function DashboardView({
         onOpenChange={setIsAddSaleOpen}
         storeId={storeId}
         employees={employees}
+        storeName={storeName}
+        paperWidth={paperWidth}
         onSuccess={onSalesChange}
       />
     </div>

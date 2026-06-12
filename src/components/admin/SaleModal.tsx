@@ -20,6 +20,7 @@ import {
 import { GroupedSale } from '@/lib/salesHelper'
 import { cn } from '@/lib/utils'
 import { useToast, Toaster } from '@/components/ui/toast'
+import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
 
 interface Profile {
   id: string
@@ -43,6 +44,8 @@ interface SaleModalProps {
   employees: Profile[]
   saleToEdit?: GroupedSale | null
   onSuccess: () => void
+  storeName?: string
+  paperWidth?: '58mm' | '80mm'
 }
 
 // Product line item
@@ -111,6 +114,8 @@ export function SaleModal({
   employees,
   saleToEdit,
   onSuccess,
+  storeName = 'Mi Tienda',
+  paperWidth = '58mm',
 }: SaleModalProps) {
   const isEditMode = !!saleToEdit
 
@@ -137,6 +142,10 @@ export function SaleModal({
   // Loading & notification states
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  // Receipt modal state
+  const [receiptData, setReceiptData] = useState<ReceiptData | null>(null)
+  const [showReceipt, setShowReceipt] = useState(false)
 
   const { toasts, toast, dismiss } = useToast()
 
@@ -294,9 +303,11 @@ export function SaleModal({
     setLoading(true)
     setErrorMsg(null)
 
-    // Optimistic: close modal immediately, run DB in background
-    onSuccess()
-    onOpenChange(false)
+    // For edits keep optimistic close; for new sales wait for DB then show receipt
+    if (isEditMode) {
+      onSuccess()
+      onOpenChange(false)
+    }
 
     try {
       let clientId: string | null = null
@@ -381,10 +392,53 @@ export function SaleModal({
         if (insertError) throw insertError
       }
 
-      toast(isEditMode ? 'Venta actualizada con éxito.' : 'Venta registrada con éxito.', 'success')
+      if (isEditMode) {
+        toast('Venta actualizada con éxito.', 'success')
+      } else {
+        // Build receipt and open modal
+        const saleCreatedAt = new Date().toISOString()
+        const cashAmt   = parseInt(splitAmounts.cash || '0', 10)
+        const transAmt  = parseInt(splitAmounts.transfer || '0', 10)
+        const cardAmt   = parseInt(splitAmounts.card || '0', 10)
+
+        const payments: ReceiptData['payments'] = isCombined
+          ? [
+              ...(cashAmt  > 0 ? [{ method: 'cash'     as const, amount: cashAmt }]  : []),
+              ...(transAmt > 0 ? [{ method: 'transfer' as const, amount: transAmt }] : []),
+              ...(cardAmt  > 0 ? [{ method: 'card'     as const, amount: cardAmt }]  : []),
+            ]
+          : [{ method: paymentMethod, amount: parseInt(amount, 10) }]
+
+        const emp = employees.find(e => e.id === employeeId)
+
+        setReceiptData({
+          storeName,
+          employeeName: emp?.name ?? emp?.email ?? 'Empleado/a',
+          clientName: clientName.trim() || null,
+          clientPhone: clientPhone.trim() || null,
+          createdAt: saleCreatedAt,
+          products: lines
+            .filter(l => l.detalle.trim())
+            .map(l => ({
+              cant: Number(l.cant) || 1,
+              detalle: l.detalle,
+              p_unit: l.p_unit,
+              importe: l.importe,
+            })),
+          payments,
+          totalAmount: isCombined ? cashAmt + transAmt + cardAmt : parseInt(amount, 10),
+          isCombined,
+          paperWidth,
+        })
+        onSuccess()
+        onOpenChange(false)
+        setShowReceipt(true)
+      }
     } catch (err: any) {
       console.error('Error saving sale:', err)
       toast(err.message || 'Error al guardar la venta.', 'error')
+      // If not edit mode, re-open the modal so user can retry
+      if (!isEditMode) onOpenChange(true)
     } finally {
       setLoading(false)
     }
@@ -393,6 +447,12 @@ export function SaleModal({
   return (
     <>
     <Toaster toasts={toasts} dismiss={dismiss} />
+    {/* Receipt modal (shown after successful new sale) */}
+    <ReceiptModal
+      open={showReceipt}
+      onClose={() => { setShowReceipt(false); setReceiptData(null) }}
+      data={receiptData}
+    />
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 p-0 rounded-2xl shadow-xl overflow-hidden">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-100 dark:border-zinc-800">

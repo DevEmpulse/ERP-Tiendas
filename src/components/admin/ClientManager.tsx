@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -19,10 +19,10 @@ import {
 import { Contact, UserPlus, Search, Phone, Edit, Trash2, ShieldAlert } from 'lucide-react'
 import { useToast, Toaster } from '@/components/ui/toast'
 
-interface Client {
+export interface Client {
   id: string
   store_id: string
-  name: string | null
+  name: string
   phone: string | null
   created_at: string
 }
@@ -54,9 +54,8 @@ export function ClientManager({ storeId }: ClientManagerProps) {
   const supabase = createClient()
 
   // Fetch clients
-  const fetchClients = async () => {
+  const fetchClients = useCallback(async () => {
     if (!storeId) return
-    setLoading(true)
     try {
       const { data, error } = await supabase
         .from('clients')
@@ -65,17 +64,34 @@ export function ClientManager({ storeId }: ClientManagerProps) {
 
       if (error) throw error
       setClients(data || [])
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Error fetching clients:', err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [storeId, supabase])
 
   useEffect(() => {
-    fetchClients()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeId])
+    let ignore = false
+    async function run() {
+      if (!storeId) return
+      try {
+        const { data, error } = await supabase
+          .from('clients')
+          .select('id, store_id, name, phone, created_at')
+          .order('name', { ascending: true })
+
+        if (error) throw error
+        if (!ignore) setClients(data || [])
+      } catch (err: unknown) {
+        console.error('Error fetching clients:', err)
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    }
+    run()
+    return () => { ignore = true }
+  }, [storeId, supabase])
 
   // Handle Add Client
   const handleAddClient = async (e: React.FormEvent) => {
@@ -87,27 +103,44 @@ export function ClientManager({ storeId }: ClientManagerProps) {
       return
     }
 
-    // Optimistic: close modal & reset form immediately
+    // Optimistic: close modal immediately, add to list
     const name = clientName.trim()
     const phone = clientPhone.trim() || null
+    const tempId = Date.now().toString()
+    const tempClient: Client = {
+      id: tempId,
+      store_id: storeId,
+      name,
+      phone,
+      created_at: new Date().toISOString()
+    }
+
     setIsAddOpen(false)
     setClientName('')
     setClientPhone('')
     setErrorMsg(null)
+    setClients(prev => [tempClient, ...prev])
     setSubmitting(true)
 
     try {
-      const { error } = await supabase
+      const { data: newClient, error } = await supabase
         .from('clients')
         .insert({ store_id: storeId, name, phone })
+        .select('id, store_id, name, phone, created_at')
+        .single()
 
       if (error) throw error
 
+      if (newClient) {
+        setClients(prev => prev.map(c => c.id === tempId ? newClient : c))
+      }
+
       toast('Cliente creado con éxito.', 'success')
       await fetchClients()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error creating client:', err)
-      toast(err.message || 'Error al guardar el cliente.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error al guardar el cliente.'
+      toast(msg, 'error')
     } finally {
       setSubmitting(false)
     }
@@ -142,9 +175,10 @@ export function ClientManager({ storeId }: ClientManagerProps) {
 
       toast('Cliente actualizado con éxito.', 'success')
       await fetchClients()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error updating client:', err)
-      toast(err.message || 'Error al actualizar el cliente.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error al actualizar el cliente.'
+      toast(msg, 'error')
     } finally {
       setSubmitting(false)
     }
@@ -171,9 +205,10 @@ export function ClientManager({ storeId }: ClientManagerProps) {
       if (error) throw error
 
       toast(`Cliente "${name}" eliminado.`, 'success')
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error deleting client:', err)
-      toast(err.message || 'Error al eliminar el cliente.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error al eliminar el cliente.'
+      toast(msg, 'error')
       await fetchClients() // restore on error
     } finally {
       setSubmitting(false)
@@ -384,6 +419,7 @@ export function ClientManager({ storeId }: ClientManagerProps) {
             <DialogFooter className="pt-2">
               <Button
                 type="submit"
+                disabled={submitting}
                 className="h-9 px-4 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold w-full sm:w-auto"
               >
                 Crear Cliente

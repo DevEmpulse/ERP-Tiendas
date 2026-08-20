@@ -17,7 +17,7 @@ interface DashboardViewProps {
   previousIncome: number
   loading: boolean
   highlightedSaleIds?: string[]
-  employees?: any[]
+  employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
   storeName?: string
   paperWidth?: '58mm' | '80mm'

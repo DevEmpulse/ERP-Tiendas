@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-import { Users, Award, TrendingUp, Calendar, CalendarDays } from 'lucide-react'
+import { Users, Award, CalendarDays } from 'lucide-react'
 import { groupSales } from '@/lib/salesHelper'
 
 interface EmployeePerf {
@@ -22,7 +21,6 @@ export function EmployeeReport() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   const [loading, setLoading] = useState(true)
   const [employees, setEmployees] = useState<EmployeePerf[]>([])
-  const [totalPeriodSales, setTotalPeriodSales] = useState(0)
 
   const supabase = createClient()
 
@@ -83,7 +81,7 @@ export function EmployeeReport() {
         if (sError) throw sError
 
         // Group combined payments
-        const groupedSales = groupSales(sales as any)
+        const groupedSales = groupSales((sales || []) as unknown as Parameters<typeof groupSales>[0])
 
         // 3. Aggregate sales by employee in memory
         const salesByEmp: Record<string, { total: number; count: number }> = {}
@@ -100,8 +98,6 @@ export function EmployeeReport() {
           salesByEmp[empId].total += amount
           salesByEmp[empId].count += 1
         })
-
-        setTotalPeriodSales(periodTotal)
 
         // 4. Map profiles to performance data
         const mappedPerf: EmployeePerf[] = (profiles || [])

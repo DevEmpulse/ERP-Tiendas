@@ -1,6 +1,6 @@
 'use client'
 
-import { LayoutDashboard, Calendar, TrendingUp, Users, LogOut, Store, X, User, Contact, Tags, Settings } from 'lucide-react'
+import { LayoutDashboard, Calendar, TrendingUp, Users, LogOut, Store, X, Contact, Tags, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 export type AdminSection = 'dashboard' | 'history' | 'employees' | 'staff' | 'clients' | 'stock' | 'settings'
@@ -81,7 +81,7 @@ export function AdminSidebar({
   }
 
   // Sidebar Inner Layout
-  const SidebarContent = () => (
+  const sidebarContent = (
     <div className="flex flex-col h-full bg-white dark:bg-zinc-900">
       {/* Store Header logo */}
       <div className="h-16 px-6 border-b border-zinc-100 dark:border-zinc-800/80 flex items-center justify-between">
@@ -173,7 +173,7 @@ export function AdminSidebar({
     <>
       {/* 1. Desktop Sidebar (Always Visible on md+) */}
       <aside className="hidden md:flex flex-col md:w-64 h-screen fixed left-0 top-0 z-30 border-r border-zinc-200/80 dark:border-zinc-800/80 shadow-xs">
-        <SidebarContent />
+        {sidebarContent}
       </aside>
 
       {/* 2. Mobile Drawer Sidebar (Using Tailwind Slide-in overlay) */}
@@ -189,7 +189,7 @@ export function AdminSidebar({
         {/* Sliding Menu panel */}
         <aside className={`absolute top-0 left-0 w-72 h-full shadow-2xl transition-transform duration-300 ease-out flex flex-col ${isOpen ? 'translate-x-0' : '-translate-x-full'
           }`}>
-          <SidebarContent />
+          {sidebarContent}
         </aside>
       </div>
     </>

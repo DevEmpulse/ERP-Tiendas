@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
@@ -14,9 +14,9 @@ import { LogOut, ShieldAlert, PlusCircle, Trash2, Mail, Store, AlertCircle, Chec
 export default function SuperAdminPage() {
   const router = useRouter()
   const supabase = createClient()
-  const [profile, setProfile] = useState<any>(null)
+  const [profile, setProfile] = useState<{ id: string; role: string; email: string; store_id: string | null } | null>(null)
   const [loading, setLoading] = useState(true)
-  const [authorizedUsers, setAuthorizedUsers] = useState<any[]>([])
+  const [authorizedUsers, setAuthorizedUsers] = useState<Array<{ id: string; email: string; store_name: string; status: string; store_id: string | null; created_at: string | null }>>([])
   const [actionLoading, setActionLoading] = useState(false)
   const [revokeLoadingId, setRevokeLoadingId] = useState<string | null>(null)
   
@@ -26,6 +26,74 @@ export default function SuperAdminPage() {
   
   // Feedback alert state
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  // Helper to show alert feedback
+  function showFeedback(type: 'success' | 'error', message: string) {
+    setFeedback({ type, message })
+    setTimeout(() => {
+      setFeedback(null)
+    }, 4000)
+  }
+
+  // Load whitelisted admins awaiting registration & registered active store admins
+  const loadAuthorizedUsers = useCallback(async () => {
+    try {
+      // 1. Fetch pending invitations
+      const { data: pendingData, error: pendingError } = await supabase
+        .from('allowed_admins')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (pendingError) throw pendingError
+
+      // 2. Fetch active store admins
+      const { data: activeProfiles, error: activeError } = await supabase
+        .from('profiles')
+        .select(`
+          id,
+          email,
+          store_id,
+          stores (
+            id,
+            name
+          )
+        `)
+        .eq('role', 'admin')
+
+      if (activeError) throw activeError
+
+      // Map pending whitelists
+      const pendingList = (pendingData || []).map((p: { id: string; email: string; store_name: string; created_at: string }) => ({
+        id: p.id,
+        email: p.email,
+        store_name: p.store_name,
+        status: 'pending',
+        store_id: null,
+        created_at: p.created_at
+      }))
+
+      // Map active stores
+      const activeList = (activeProfiles || []).flatMap((ap: Record<string, unknown>) => {
+        if (!ap.email || ap.email === profile?.email || !ap.stores) return []
+        const store = Array.isArray(ap.stores) ? ap.stores[0] : ap.stores
+        if (!store) return []
+        return [{
+          id: String(ap.id),
+          email: String(ap.email),
+          store_name: String(store.name),
+          status: 'active',
+          store_id: String(store.id),
+          created_at: null
+        }]
+      })
+
+      // Combine both lists (pending first, then active)
+      setAuthorizedUsers([...pendingList, ...activeList])
+    } catch (err: unknown) {
+      console.error('Error loading whitelisted and active admins:', err)
+      showFeedback('error', 'Error al cargar los accesos autorizados.')
+    }
+  }, [profile?.email, supabase])
 
   // Verify role and load context
   useEffect(() => {
@@ -60,72 +128,7 @@ export default function SuperAdminPage() {
     }
 
     checkSuperAdmin()
-  }, [router, supabase])
-
-  // Load whitelisted admins awaiting registration & registered active store admins
-  async function loadAuthorizedUsers() {
-    try {
-      // 1. Fetch pending invitations
-      const { data: pendingData, error: pendingError } = await supabase
-        .from('allowed_admins')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (pendingError) throw pendingError
-
-      // 2. Fetch active store admins
-      const { data: activeProfiles, error: activeError } = await supabase
-        .from('profiles')
-        .select(`
-          id,
-          email,
-          store_id,
-          stores (
-            id,
-            name
-          )
-        `)
-        .eq('role', 'admin')
-
-      if (activeError) throw activeError
-
-      // Map pending whitelists
-      const pendingList = (pendingData || []).map((p: any) => ({
-        id: p.id,
-        email: p.email,
-        store_name: p.store_name,
-        status: 'pending',
-        store_id: null,
-        created_at: p.created_at
-      }))
-
-      // Map active stores (excluding the superadmin's store if it has role admin, but role is superadmin anyway)
-      const activeList = (activeProfiles || [])
-        .filter((ap: any) => ap.email !== profile?.email && ap.stores) // Ensure they have a valid store
-        .map((ap: any) => ({
-          id: ap.id,
-          email: ap.email,
-          store_name: ap.stores.name,
-          status: 'active',
-          store_id: ap.stores.id,
-          created_at: null // Active doesn't strictly need a creation timestamp here
-        }))
-
-      // Combine both lists (pending first, then active)
-      setAuthorizedUsers([...pendingList, ...activeList])
-    } catch (err) {
-      console.error('Error loading whitelisted and active admins:', err)
-      showFeedback('error', 'Error al cargar los accesos autorizados.')
-    }
-  }
-
-  // Helper to show alert feedback
-  function showFeedback(type: 'success' | 'error', message: string) {
-    setFeedback({ type, message })
-    setTimeout(() => {
-      setFeedback(null)
-    }, 6000)
-  }
+  }, [loadAuthorizedUsers, router, supabase])
 
   // Handle Form Submission (Authorize new email & store)
   const handleSubmit = async (e: React.FormEvent) => {
@@ -173,9 +176,10 @@ export default function SuperAdminPage() {
       setEmail('')
       setStoreName('')
       await loadAuthorizedUsers()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error inserting allowed admin:', err)
-      showFeedback('error', err.message || 'Ocurrió un error al autorizar el acceso.')
+      const msg = err instanceof Error ? err.message : 'Ocurrió un error al autorizar el acceso.'
+      showFeedback('error', msg)
     } finally {
       setActionLoading(false)
     }
@@ -217,9 +221,10 @@ export default function SuperAdminPage() {
       }
       
       await loadAuthorizedUsers()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error revoking/deleting:', err)
-      showFeedback('error', err.message || 'Error al procesar la solicitud.')
+      const msg = err instanceof Error ? err.message : 'Error al procesar la solicitud.'
+      showFeedback('error', msg)
     } finally {
       setRevokeLoadingId(null)
     }

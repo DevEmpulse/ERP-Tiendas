@@ -176,7 +176,7 @@ export function StoreSettingsView({ storeId, currentPaperWidth, onPaperWidthChan
         </div>
 
         <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
-          Este ajuste afecta el formato del ticket al usar "Imprimir Ticket" después de registrar una venta.
+          Este ajuste afecta el formato del ticket al usar &quot;Imprimir Ticket&quot; después de registrar una venta.
         </p>
       </div>
     </div>

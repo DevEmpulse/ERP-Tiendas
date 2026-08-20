@@ -14,18 +14,13 @@ interface KpiCardsProps {
 export function KpiCards({ 
   loading, 
   dailyIncome, 
-  dailySalesCount, 
-  previousIncome = 0,
-  highlightedSaleIds = []
+  dailySalesCount,
 }: KpiCardsProps) {
-  const [showIncome, setShowIncome] = useState<boolean>(true)
-
-  useEffect(() => {
+  const [showIncome, setShowIncome] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true
     const stored = localStorage.getItem('showIncome')
-    if (stored !== null) {
-      setShowIncome(stored === 'true')
-    }
-  }, [])
+    return stored !== null ? stored === 'true' : true
+  })
 
   const toggleShowIncome = () => {
     setShowIncome(prev => {
@@ -34,32 +29,40 @@ export function KpiCards({
       return next
     })
   }
+
   const [isIncomeFlashing, setIsIncomeFlashing] = useState(false)
   const [isCountFlashing, setIsCountFlashing] = useState(false)
   const [prevIncome, setPrevIncome] = useState(dailyIncome)
   const [prevCount, setPrevCount] = useState(dailySalesCount)
 
-  // Trigger flash effect when income increases
-  useEffect(() => {
+  // Adjust state during render when props change
+  if (prevIncome !== dailyIncome) {
+    setPrevIncome(dailyIncome)
     if (dailyIncome > prevIncome) {
       setIsIncomeFlashing(true)
-      const timer = setTimeout(() => setIsIncomeFlashing(false), 2000)
-      setPrevIncome(dailyIncome)
-      return () => clearTimeout(timer)
     }
-    setPrevIncome(dailyIncome)
-  }, [dailyIncome, prevIncome])
+  }
 
-  // Trigger flash effect when sales count increases
-  useEffect(() => {
+  if (prevCount !== dailySalesCount) {
+    setPrevCount(dailySalesCount)
     if (dailySalesCount > prevCount) {
       setIsCountFlashing(true)
-      const timer = setTimeout(() => setIsCountFlashing(false), 2000)
-      setPrevCount(dailySalesCount)
+    }
+  }
+
+  useEffect(() => {
+    if (isIncomeFlashing) {
+      const timer = setTimeout(() => setIsIncomeFlashing(false), 2000)
       return () => clearTimeout(timer)
     }
-    setPrevCount(dailySalesCount)
-  }, [dailySalesCount, prevCount])
+  }, [isIncomeFlashing])
+
+  useEffect(() => {
+    if (isCountFlashing) {
+      const timer = setTimeout(() => setIsCountFlashing(false), 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [isCountFlashing])
 
   // Format currency
   const formatCurrency = (value: number) => {

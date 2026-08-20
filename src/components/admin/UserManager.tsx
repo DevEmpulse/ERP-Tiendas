@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -18,7 +18,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { useToast, Toaster } from '@/components/ui/toast'
-import { Users, UserPlus, Search, Mail, ShieldAlert, BadgeAlert, Edit, Trash2 } from 'lucide-react'
+import { Users, UserPlus, Search, Mail, ShieldAlert, Edit, Trash2 } from 'lucide-react'
 
 interface UserProfile {
   id: string
@@ -56,8 +56,7 @@ export function UserManager({ storeId }: UserManagerProps) {
   const supabase = createClient()
 
   // Fetch current profiles
-  const fetchProfiles = async () => {
-    setLoading(true)
+  const fetchProfiles = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -66,24 +65,42 @@ export function UserManager({ storeId }: UserManagerProps) {
         .order('name', { ascending: true })
 
       if (error) throw error
-      setProfiles(data as UserProfile[] || [])
-    } catch (err) {
+      setProfiles((data as UserProfile[]) || [])
+    } catch (err: unknown) {
       console.error('Error fetching users:', err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [supabase])
 
   useEffect(() => {
-    fetchProfiles()
-    
+    let ignore = false
+    async function run() {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id, name, email, role, created_at')
+          .order('role', { ascending: true })
+          .order('name', { ascending: true })
+
+        if (error) throw error
+        if (!ignore) setProfiles((data as UserProfile[]) || [])
+      } catch (err: unknown) {
+        console.error('Error fetching users:', err)
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    }
+    run()
+
     supabase.auth.getUser().then(({ data }) => {
-      if (data.user) {
+      if (data.user && !ignore) {
         setCurrentUserId(data.user.id)
       }
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+
+    return () => { ignore = true }
+  }, [supabase])
 
   // Handle Edit Member
   const handleEditUser = async (e: React.FormEvent) => {
@@ -119,9 +136,10 @@ export function UserManager({ storeId }: UserManagerProps) {
 
       toast('Miembro del equipo actualizado con éxito.', 'success')
       await fetchProfiles()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error updating employee:', err)
-      toast(err.message || 'Error al actualizar el miembro del equipo.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error al actualizar el miembro del equipo.'
+      toast(msg, 'error')
     }
   }
 
@@ -143,9 +161,10 @@ export function UserManager({ storeId }: UserManagerProps) {
       if (error) throw error
 
       toast('Miembro del equipo eliminado con éxito.', 'success')
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error deleting employee:', err)
-      toast(err.message || 'Error al eliminar el miembro del equipo.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error al eliminar el miembro del equipo.'
+      toast(msg, 'error')
       // Restore the user on error
       await fetchProfiles()
     }
@@ -193,7 +212,7 @@ export function UserManager({ storeId }: UserManagerProps) {
 
     setSubmitting(true)
     try {
-      const { data, error } = await supabase.rpc('preload_employee', {
+      const { error } = await supabase.rpc('preload_employee', {
         p_email: emailSnapshot,
         p_name: nameSnapshot,
         p_role: 'employee',
@@ -206,9 +225,10 @@ export function UserManager({ storeId }: UserManagerProps) {
 
       toast(`¡Perfil pre-creado! Se asociará cuando ${emailSnapshot} inicie sesión.`, 'success')
       await fetchProfiles()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error preloading employee:', err)
-      toast(err.message || 'Error de conexión con la base de datos.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error de conexión con la base de datos.'
+      toast(msg, 'error')
     } finally {
       setSubmitting(false)
     }

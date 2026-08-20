@@ -96,7 +96,7 @@ export function generateSalesReportPdf({
   // 3. STATS / SUMMARY CARD
   // Compute totals
   let totalRevenue = 0
-  let totalSalesCount = sales.length
+  const totalSalesCount = sales.length
   let cashTotal = 0
   let transferTotal = 0
   let cardTotal = 0
@@ -338,7 +338,7 @@ export function generateReceiptPdf(data: ReceiptData) {
   })
 
   // ── Total box ──────────────────────────────────────────────────────────────
-  const finalY = (doc as any).lastAutoTable.finalY + 6
+  const finalY = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6
   const totalBoxH = 16
   doc.setFillColor(...emerald)
   doc.roundedRect(14, finalY, pageWidth - 28, totalBoxH, 3, 3, 'F')

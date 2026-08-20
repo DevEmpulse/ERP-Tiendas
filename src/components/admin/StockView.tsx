@@ -24,7 +24,6 @@ import {
   Hash,
   DollarSign,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { useToast, Toaster } from '@/components/ui/toast'
 
 interface PriceRule {
@@ -76,20 +75,19 @@ export function StockView({ storeId }: StockViewProps) {
 
   const loadRules = useCallback(async () => {
     if (!storeId) return
-    setLoading(true)
     try {
       const { data, error } = await supabase
         .from('product_price_rules')
         .select('*')
         .order('product_name', { ascending: true })
       if (error) throw error
-      setRules((data || []).map((r: any) => ({
+      setRules((data || []).map((r: Record<string, unknown>) => ({
         ...r,
         special_price: Number(r.special_price),
         unit_price: Number(r.unit_price),
         quantity: Number(r.quantity),
-      })))
-    } catch (err) {
+      } as PriceRule)))
+    } catch (err: unknown) {
       console.error('Error loading price rules:', err)
     } finally {
       setLoading(false)
@@ -97,8 +95,32 @@ export function StockView({ storeId }: StockViewProps) {
   }, [storeId, supabase])
 
   useEffect(() => {
-    loadRules()
-  }, [loadRules])
+    let ignore = false
+    async function run() {
+      if (!storeId) return
+      try {
+        const { data, error } = await supabase
+          .from('product_price_rules')
+          .select('*')
+          .order('product_name', { ascending: true })
+        if (error) throw error
+        if (!ignore) {
+          setRules((data || []).map((r: Record<string, unknown>) => ({
+            ...r,
+            special_price: Number(r.special_price),
+            unit_price: Number(r.unit_price),
+            quantity: Number(r.quantity),
+          } as PriceRule)))
+        }
+      } catch (err: unknown) {
+        console.error('Error loading price rules:', err)
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    }
+    run()
+    return () => { ignore = true }
+  }, [storeId, supabase])
 
   // Derived: auto-calc unit_price when special_price or quantity changes
   const handleFormChange = (field: string, rawValue: string) => {
@@ -174,8 +196,9 @@ export function StockView({ storeId }: StockViewProps) {
         toast('Regla de precio creada.', 'success')
       }
       await loadRules()
-    } catch (err: any) {
-      toast(err.message || 'Error al guardar la regla.', 'error')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al guardar la regla.'
+      toast(msg, 'error')
       await loadRules()
     } finally {
       setSaving(false)
@@ -194,8 +217,9 @@ export function StockView({ storeId }: StockViewProps) {
         .eq('id', id)
       if (error) throw error
       toast('Regla eliminada correctamente.', 'success')
-    } catch (err: any) {
-      toast(err.message || 'Error al eliminar.', 'error')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al eliminar.'
+      toast(msg, 'error')
       await loadRules() // restore on error
     } finally {
       setDeleting(false)

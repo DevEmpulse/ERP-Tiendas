@@ -12,9 +12,9 @@ import { ClientManager } from '@/components/admin/ClientManager'
 import { StockView } from '@/components/admin/StockView'
 import { StoreSettingsView } from '@/components/admin/StoreSettingsView'
 import { Button } from '@/components/ui/button'
-import { groupSales } from '@/lib/salesHelper'
+import { groupSales, Sale } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Menu, LogOut, Store, User, ShieldCheck } from 'lucide-react'
+import { Menu, LogOut, Store, ShieldCheck } from 'lucide-react'
 
 interface Profile {
   id: string
@@ -30,115 +30,95 @@ interface StoreData {
   thermal_paper_width?: '58mm' | '80mm'
 }
 
-interface Sale {
-  id: string
-  created_at: string
-  description: string
-  payment_method: 'cash' | 'transfer' | 'card'
-  total_amount: number
-  employee_id: string
-  profiles?: {
-    id: string
-    name: string | null
-    email: string | null
-  } | null
-}
-
 export default function AdminPage() {
   const router = useRouter()
   const supabase = createClient()
 
-  // App Layout States
-  const [activeSection, setActiveSection] = useState<AdminSection>('dashboard')
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false) // Mobile drawer toggle
-
-  // Loading States
-  const [initialLoading, setInitialLoading] = useState(true)
-  const [dataLoading, setDataLoading] = useState(true)
-
-  // Context States
   const [userProfile, setUserProfile] = useState<Profile | null>(null)
   const [storeInfo, setStoreInfo] = useState<StoreData | null>(null)
   const [paperWidth, setPaperWidth] = useState<'58mm' | '80mm'>('58mm')
-  
-  // Data States
   const [sales, setSales] = useState<Sale[]>([])
-  const [highlightedSaleIds, setHighlightedSaleIds] = useState<string[]>([])
   const [employeesList, setEmployeesList] = useState<Profile[]>([])
+  const [initialLoading, setInitialLoading] = useState(true)
+  const [dataLoading, setDataLoading] = useState(true)
+
+  // Layout & Navigation State
+  const [activeSection, setActiveSection] = useState<AdminSection>('dashboard')
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+
+  // Realtime highlight state
+  const [highlightedSaleIds, setHighlightedSaleIds] = useState<string[]>([])
+
+  // Trigger state to manually reload sales when created from modal
   const [refreshSalesKey, setRefreshSalesKey] = useState(0)
-  const triggerRefreshSales = () => setRefreshSalesKey(prev => prev + 1)
 
+  const triggerRefreshSales = () => {
+    setRefreshSalesKey(prev => prev + 1)
+  }
 
-
-  // Sign out handler
   const handleLogout = async () => {
     await supabase.auth.signOut()
     router.push('/login')
   }
 
-  // Load Admin Profile and Store Context
+  // 1. Auth & Profile verification
   useEffect(() => {
-    async function loadAdminContext() {
+    async function verifyAdminAuth() {
       try {
-        // getSession reads from cookie — no extra network round-trip
-        const { data: { session } } = await supabase.auth.getSession()
-        if (!session?.user) {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) {
           router.push('/login')
           return
         }
 
-        const userId = session.user.id
-
-        // Fetch profile and store in parallel
-        const { data: profile, error: pError } = await supabase
+        const { data: profileData, error: profileError } = await supabase
           .from('profiles')
-          .select('id, name, email, role, store_id')
-          .eq('id', userId)
+          .select(`
+            id,
+            name,
+            email,
+            role,
+            store_id,
+            stores (
+              id,
+              name,
+              thermal_paper_width
+            )
+          `)
+          .eq('id', user.id)
           .single()
 
-        if (pError || !profile) {
-          console.error('Error fetching admin profile:', pError)
+        if (profileError || !profileData || profileData.role !== 'admin') {
+          console.error('Unauthorized access to admin dashboard')
           router.push('/login')
           return
         }
 
-        if (profile.role !== 'admin') {
-          router.push('/employee')
-          return
-        }
+        const { stores, ...profileObj } = profileData as unknown as { stores: StoreData | null; id: string; name: string | null; email: string | null; role: 'admin' | 'employee'; store_id: string | null }
+        setUserProfile(profileObj)
 
-        // Fetch store in parallel with setting user profile
-        const storePromise = profile.store_id
-          ? supabase.from('stores').select('id, name, thermal_paper_width').eq('id', profile.store_id).single()
-          : Promise.resolve({ data: null, error: null })
-
-        setUserProfile(profile as Profile)
-
-        const { data: store, error: sError } = await storePromise
-        if (!sError && store) {
-          setStoreInfo(store as StoreData)
-          setPaperWidth((store.thermal_paper_width as '58mm' | '80mm') ?? '58mm')
+        if (stores) {
+          setStoreInfo(stores)
+          setPaperWidth(stores.thermal_paper_width ?? '58mm')
         }
       } catch (err) {
-        console.error('Error loading admin context:', err)
+        console.error('Error verifying auth:', err)
+        router.push('/login')
       } finally {
         setInitialLoading(false)
       }
     }
 
-    loadAdminContext()
+    verifyAdminAuth()
   }, [router, supabase])
-  // Load Sales + Employees in parallel once store is known
+
+  // 2. Fetch sales & employees for this store
   useEffect(() => {
     if (!userProfile?.store_id) return
 
     async function loadData() {
       setDataLoading(true)
       try {
-        // Last 90 days filter to avoid loading all history
-        const since = new Date()
-        since.setDate(since.getDate() - 90)
-
         const [salesResult, employeesResult] = await Promise.all([
           supabase
             .from('sales')
@@ -149,13 +129,13 @@ export default function AdminPage() {
               payment_method,
               total_amount,
               employee_id,
-              client_id,
-              clients ( id, phone ),
-              profiles ( id, name, email )
+              profiles (
+                id,
+                name,
+                email
+              )
             `)
-            .gte('created_at', since.toISOString())
-            .order('created_at', { ascending: false })
-            .limit(600),
+            .order('created_at', { ascending: false }),
           supabase
             .from('profiles')
             .select('id, name, email, role, store_id')
@@ -164,7 +144,7 @@ export default function AdminPage() {
 
         if (salesResult.error) throw salesResult.error
 
-        const mappedSales = (salesResult.data || []).map((sale: any) => ({
+        const mappedSales = (salesResult.data || []).map((sale) => ({
           ...sale,
           total_amount: Number(sale.total_amount)
         }))
@@ -189,7 +169,6 @@ export default function AdminPage() {
 
     const storeId = userProfile.store_id
 
-    console.log(`Setting up realtime subscription for store ${storeId}...`)
     const channel = supabase
       .channel(`realtime-sales-${storeId}`)
       .on(
@@ -201,42 +180,35 @@ export default function AdminPage() {
           filter: `store_id=eq.${storeId}`,
         },
         async (payload) => {
-          const newRecord = payload.new as any
-          if (!newRecord) return
+          const newRecord = payload.new as Partial<Sale>
+          if (!newRecord || !newRecord.id) return
 
           try {
-            // Fix N+1: look up employee from already-loaded list (no extra DB call)
-            const profile = employeesList.find(e => e.id === newRecord.employee_id) ?? null
-
-            const enrichedSale: Sale = {
-              id: newRecord.id,
-              created_at: newRecord.created_at,
-              description: newRecord.description,
-              payment_method: newRecord.payment_method,
-              total_amount: Number(newRecord.total_amount),
-              employee_id: newRecord.employee_id,
-              profiles: profile ? { id: profile.id, name: profile.name, email: profile.email } : null,
-            }
-
-            // Update sales state (prepend new sale)
-            setSales((prev) => {
-              if (prev.some(s => s.id === enrichedSale.id)) return prev
-              return [enrichedSale, ...prev]
+            // Fix N+1: look up employee from state or fallback
+            setSales(prev => {
+              if (prev.some(s => s.id === newRecord.id)) return prev
+              const formattedSale: Sale = {
+                id: newRecord.id!,
+                created_at: newRecord.created_at || new Date().toISOString(),
+                description: newRecord.description || '',
+                payment_method: (newRecord.payment_method as 'cash' | 'transfer' | 'card') || 'cash',
+                total_amount: Number(newRecord.total_amount || 0),
+                employee_id: newRecord.employee_id || '',
+                profiles: null
+              }
+              return [formattedSale, ...prev]
             })
 
-            // Highlight the new sale ID for 3.5 seconds
-            setHighlightedSaleIds((prev) => [...prev, enrichedSale.id])
+            setHighlightedSaleIds(prev => [...prev, newRecord.id!])
             setTimeout(() => {
-              setHighlightedSaleIds((prev) => prev.filter((id) => id !== enrichedSale.id))
-            }, 3500)
-
+              setHighlightedSaleIds(prev => prev.filter(id => id !== newRecord.id))
+            }, 5000)
           } catch (err) {
-            console.error('Error handling realtime sale insert:', err)
+            console.error('Error handling realtime sale event:', err)
           }
         }
       )
       .subscribe((status, err) => {
-        console.log(`Realtime subscription status for store ${storeId}:`, status)
         if (err) console.error('Realtime subscription error:', err)
       })
 
@@ -244,7 +216,7 @@ export default function AdminPage() {
       console.log(`Cleaning up realtime subscription for store ${storeId}...`)
       supabase.removeChannel(channel)
     }
-  }, [userProfile, supabase])
+  }, [userProfile?.store_id, supabase])
 
   // Compute metrics in local timezone
   const localTodayStats = () => {
@@ -265,7 +237,7 @@ export default function AdminPage() {
     })
 
     // Group today's sales for display and transaction count
-    const groupedTodaySales = groupSales(todaySalesRaw as any)
+    const groupedTodaySales = groupSales(todaySalesRaw)
 
     // Yesterday's Sales
     const yesterdaySales = sales.filter(s => {
@@ -273,12 +245,12 @@ export default function AdminPage() {
       return d >= yesterdayStart && d <= yesterdayEnd
     })
 
-    const dailyIncome = todaySalesRaw.reduce((acc, s) => acc + s.total_amount, 0)
+    const dailyIncome = todaySalesRaw.reduce((acc, s) => acc + Number(s.total_amount), 0)
     const dailySalesCount = groupedTodaySales.length
-    const previousIncome = yesterdaySales.reduce((acc, s) => acc + s.total_amount, 0)
+    const previousIncome = yesterdaySales.reduce((acc, s) => acc + Number(s.total_amount), 0)
 
     return {
-      todaySales: groupedTodaySales as any,
+      todaySales: groupedTodaySales,
       dailyIncome,
       dailySalesCount,
       previousIncome
@@ -299,7 +271,7 @@ export default function AdminPage() {
             previousIncome={previousIncome}
             loading={dataLoading}
             highlightedSaleIds={highlightedSaleIds}
-            employees={employeesList as any}
+            employees={employeesList}
             storeId={userProfile?.store_id || null}
             storeName={storeInfo?.name || 'Mi Tienda'}
             paperWidth={paperWidth}
@@ -309,9 +281,9 @@ export default function AdminPage() {
       case 'history':
         return (
           <HistoryView
-            sales={groupSales(sales as any)}
+            sales={groupSales(sales)}
             loading={dataLoading}
-            employees={employeesList as any}
+            employees={employeesList}
             storeId={userProfile?.store_id || null}
             storeName={storeInfo?.name || 'Mi Tienda'}
             onSalesChange={triggerRefreshSales}

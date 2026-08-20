@@ -22,13 +22,6 @@ import { cn } from '@/lib/utils'
 import { useToast, Toaster } from '@/components/ui/toast'
 import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
 
-interface Profile {
-  id: string
-  name: string | null
-  email: string | null
-  role: string | null
-}
-
 interface PriceRule {
   id: string
   product_name: string
@@ -41,7 +34,7 @@ interface SaleModalProps {
   isOpen: boolean
   onOpenChange: (open: boolean) => void
   storeId: string | null
-  employees: Profile[]
+  employees: Array<{ id: string; name: string | null; email?: string | null; role?: string | null }>
   saleToEdit?: GroupedSale | null
   onSuccess: () => void
   storeName?: string
@@ -77,8 +70,8 @@ const parseDescription = (raw: string): { lines: ProductLine[]; notes: string } 
     try {
       const parsed = JSON.parse(trimmed)
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const lines: ProductLine[] = parsed.map((item: any) => ({
-          id: Math.random().toString(36).slice(2),
+        const lines: ProductLine[] = parsed.map((item: Record<string, unknown>, idx: number) => ({
+          id: String(idx) + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 4) : '1'),
           cant: String(item.cant ?? item.cantidad ?? '1'),
           detalle: String(item.detalle ?? item.descripcion ?? ''),
           p_unit: Number(item.p_unit ?? item.precio_unitario ?? 0),
@@ -165,18 +158,18 @@ export function SaleModal({
       .from('product_price_rules')
       .select('id, product_name, quantity, special_price, unit_price')
       .then(({ data }) => {
-        if (data) setPriceRules(data.map((r: any) => ({
+        if (data) setPriceRules(data.map((r: Record<string, unknown>) => ({
           ...r,
           quantity: Number(r.quantity),
           special_price: Number(r.special_price),
           unit_price: Number(r.unit_price),
-        })))
+        } as PriceRule)))
       })
-  }, [isOpen, storeId])
-
-  // Pre-fill form on open
-  useEffect(() => {
-    if (!isOpen) return
+  }, [isOpen, storeId, supabase])
+  
+  const [prevIsOpen, setPrevIsOpen] = useState(false)
+  if (isOpen && !prevIsOpen) {
+    setPrevIsOpen(true)
     setErrorMsg(null)
 
     if (saleToEdit) {
@@ -188,7 +181,7 @@ export function SaleModal({
       if (saleToEdit.client_phone) {
         setShowClientPhone(true)
         setClientPhone(saleToEdit.client_phone)
-        setClientName((saleToEdit as any).client_name ?? '')
+        setClientName((saleToEdit as unknown as { client_name?: string }).client_name ?? '')
       } else {
         setShowClientPhone(false)
         setClientPhone('')
@@ -222,7 +215,7 @@ export function SaleModal({
       setClientPhone('')
       setClientName('')
     }
-  }, [isOpen, saleToEdit, employees])
+  }
 
   // Update a single line field; bidirectional recalc between cant/p_unit/importe
   const updateLine = useCallback((id: string, field: keyof ProductLine, raw: string | number) => {
@@ -349,10 +342,10 @@ export function SaleModal({
       const description = serializeLines(lines)
 
       if (isCombined) {
-        const txnRef = saleToEdit?.ref_code || Math.random().toString(36).substring(2, 6).toUpperCase()
+        const txnRef = saleToEdit?.ref_code || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 4).toUpperCase() : 'TXN1')
         // Only preserve original created_at when editing; for new sales omit it so DB uses default now()
         const originalDate = isEditMode && saleToEdit?.created_at ? saleToEdit.created_at : undefined
-        const salesToInsert: any[] = []
+        const salesToInsert: Record<string, unknown>[] = []
 
         const cashNum = parseInt(splitAmounts.cash || '0', 10)
         if (cashNum > 0) salesToInsert.push({
@@ -381,7 +374,7 @@ export function SaleModal({
         const { error: insertError } = await supabase.from('sales').insert(salesToInsert)
         if (insertError) throw insertError
       } else {
-        const saleData: any = {
+        const saleData: Record<string, unknown> = {
           store_id: storeId, employee_id: employeeId, description,
           payment_method: paymentMethod,
           total_amount: parseInt(amount, 10),
@@ -434,9 +427,10 @@ export function SaleModal({
         onOpenChange(false)
         setShowReceipt(true)
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error saving sale:', err)
-      toast(err.message || 'Error al guardar la venta.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error al guardar la venta.'
+      toast(msg, 'error')
       // If not edit mode, re-open the modal so user can retry
       if (!isEditMode) onOpenChange(true)
     } finally {

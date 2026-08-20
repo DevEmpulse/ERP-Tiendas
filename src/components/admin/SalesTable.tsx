@@ -25,7 +25,7 @@ interface SalesTableProps {
   sales: GroupedSale[]
   loading: boolean
   highlightedSaleIds?: string[]
-  employees?: any[]
+  employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
   onSalesChange?: () => void
 }
@@ -106,9 +106,10 @@ export function SalesTable({
 
       toast('Venta eliminada con éxito.', 'success')
       onSalesChange()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error deleting sale:', err)
-      toast(err.message || 'Error al eliminar la venta.', 'error')
+      const msg = err instanceof Error ? err.message : 'Error al eliminar la venta.'
+      toast(msg, 'error')
       onSalesChange() // refresh on error
     }
   }

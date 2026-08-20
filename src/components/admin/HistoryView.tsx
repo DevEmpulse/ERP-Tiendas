@@ -8,7 +8,7 @@ import { GroupedSale } from '@/lib/salesHelper'
 interface HistoryViewProps {
   sales: GroupedSale[]
   loading: boolean
-  employees?: any[]
+  employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
   storeName?: string
   onSalesChange?: () => void

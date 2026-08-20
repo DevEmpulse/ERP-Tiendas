@@ -20,7 +20,7 @@ export interface Sale {
   employee_id: string
   client_id?: string | null
   clients?: { id: string, phone: string | null } | null
-  profiles?: SaleProfile | null
+  profiles?: SaleProfile | SaleProfile[] | null
 }
 
 export function parseSaleDescription(description: string, fallbackAmount: number | string): SaleItem[] {
@@ -40,7 +40,7 @@ export function parseSaleDescription(description: string, fallbackAmount: number
     try {
       const parsed = JSON.parse(clean)
       if (Array.isArray(parsed)) {
-        return parsed.map((item: any) => {
+        return parsed.map((item: Record<string, unknown>) => {
           const cant = Number(item.cant ?? 1)
           const p_unit = Number(item.p_unit ?? 0)
           return {
@@ -141,7 +141,7 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           created_at: sale.created_at,
           description: cleanDesc || sale.description,
           employee_id: sale.employee_id,
-          profiles: sale.profiles || null,
+          profiles: (Array.isArray(sale.profiles) ? sale.profiles[0] : sale.profiles) || null,
           payments: [{ id: sale.id, method: sale.payment_method, amount: amount }],
           total_amount: amount,
           is_combined: false,
@@ -174,7 +174,7 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           created_at: sale.created_at,
           description: cleanDesc || sale.description,
           employee_id: sale.employee_id,
-          profiles: sale.profiles || null,
+          profiles: (Array.isArray(sale.profiles) ? sale.profiles[0] : sale.profiles) || null,
           payments: [{ id: sale.id, method: sale.payment_method, amount: amount }],
           total_amount: amount,
           is_combined: false,

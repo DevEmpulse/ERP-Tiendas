@@ -51,7 +51,7 @@ export default function EmployeePage() {
         return
       }
 
-      const { stores, ...profile } = profileData as any
+      const { stores, ...profile } = profileData as unknown as Profile & { stores: { name: string; thermal_paper_width?: '58mm' | '80mm' } | null }
       setProfile(profile)
       setStoreName(stores?.name ?? '')
       setPaperWidth((stores?.thermal_paper_width as '58mm' | '80mm') ?? '58mm')

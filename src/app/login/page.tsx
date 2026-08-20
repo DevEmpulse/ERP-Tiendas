@@ -8,14 +8,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 function LoginContent() {
   const [loading, setLoading] = useState(false)
-  const [showError, setShowError] = useState(false)
   const searchParams = useSearchParams()
+  const [showError, setShowError] = useState(() => Boolean(searchParams.get('error')))
 
-  // Show popup if there's any error param, then clean the URL immediately
+  // Clean the error query string from the URL without triggering a navigation
   useEffect(() => {
     if (searchParams.get('error')) {
-      setShowError(true)
-      // Remove the query string from the URL without triggering a navigation
       window.history.replaceState(null, '', '/login')
     }
   }, [searchParams])

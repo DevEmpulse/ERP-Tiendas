@@ -95,12 +95,12 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
       .from('product_price_rules')
       .select('id, product_name, quantity, special_price, unit_price')
       .then(({ data }) => {
-        if (data) setPriceRules(data.map((r: any) => ({
+        if (data) setPriceRules(data.map((r: Record<string, unknown>) => ({
           ...r,
           quantity: Number(r.quantity),
           special_price: Number(r.special_price),
           unit_price: Number(r.unit_price),
-        })))
+        } as PriceRule)))
       })
   }, [profile.store_id])
 
@@ -307,8 +307,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
       // 4. Insert Sale(s)
       if (isCombined) {
         // Generate a 4-character transaction identifier (e.g. #A4F9)
-        const txnRef = Math.random().toString(36).substring(2, 6).toUpperCase()
-        const salesToInsert: any[] = []
+        const txnRef = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 4).toUpperCase() : 'TXN1'
+        const salesToInsert: Record<string, unknown>[] = []
 
         if (cashNum > 0) {
           salesToInsert.push({
@@ -394,9 +394,10 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
         paperWidth,
       })
       setShowReceipt(true)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error registering sale:', err)
-      showToast(err.message || 'Error al registrar la venta. Inténtalo de nuevo.', 'error')
+      const message = err instanceof Error ? err.message : 'Error al registrar la venta. Inténtalo de nuevo.'
+      showToast(message, 'error')
     } finally {
       setLoading(false)
     }

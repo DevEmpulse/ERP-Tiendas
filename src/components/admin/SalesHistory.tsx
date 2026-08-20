@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Input } from '@/components/ui/input'
@@ -14,7 +14,7 @@ import { generateSalesReportPdf } from '@/lib/pdfGenerator'
 interface SalesHistoryProps {
   sales: GroupedSale[]
   loading: boolean
-  employees?: any[]
+  employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
   storeName?: string
   onSalesChange?: () => void
@@ -81,82 +81,75 @@ export function SalesHistory({
   }
 
   // Filter sales by selected date range (local day boundaries)
-  const filteredSales = useMemo(() => {
-    if (!startDateStr || !endDateStr) return sales
-
-    return sales.filter((sale) => {
-      const localDate = toLocalDateStr(sale.created_at)
-      return localDate >= startDateStr && localDate <= endDateStr
-    })
-  }, [sales, startDateStr, endDateStr])
+  const filteredSales = (!startDateStr || !endDateStr)
+    ? sales
+    : sales.filter((sale) => {
+        const localDate = toLocalDateStr(sale.created_at)
+        return localDate >= startDateStr && localDate <= endDateStr
+      })
 
   // Aggregate stats
-  const stats = useMemo(() => {
-    let total = 0
-    let count = filteredSales.length
-    let cash = 0
-    let transfer = 0
-    let card = 0
+  let total = 0
+  const count = filteredSales.length
+  let cash = 0
+  let transfer = 0
+  let card = 0
 
-    filteredSales.forEach((sale) => {
-      total += sale.total_amount
-      sale.payments.forEach((p) => {
-        if (p.method === 'cash') cash += p.amount
-        if (p.method === 'transfer') transfer += p.amount
-        if (p.method === 'card') card += p.amount
-      })
+  filteredSales.forEach((sale) => {
+    total += sale.total_amount
+    sale.payments.forEach((p) => {
+      if (p.method === 'cash') cash += p.amount
+      if (p.method === 'transfer') transfer += p.amount
+      if (p.method === 'card') card += p.amount
     })
+  })
 
-    const avg = count > 0 ? Math.round(total / count) : 0
-
-    return { total, count, avg, cash, transfer, card }
-  }, [filteredSales])
+  const avg = count > 0 ? Math.round(total / count) : 0
+  const stats = { total, count, avg, cash, transfer, card }
 
   // Grouped by Day: Date (DD/MM/YYYY) -> { total, count, cash, transfer, card }
-  const dailyData = useMemo(() => {
-    const groups: Record<string, { dateStr: string; total: number; count: number; cash: number; transfer: number; card: number }> = {}
+  const groups: Record<string, { dateStr: string; total: number; count: number; cash: number; transfer: number; card: number }> = {}
 
-    filteredSales.forEach((sale) => {
-      try {
-        const d = new Date(sale.created_at)
-        const year = d.getFullYear()
-        const month = String(d.getMonth() + 1).padStart(2, '0')
-        const day = String(d.getDate()).padStart(2, '0')
-        const localDateStr = `${day}/${month}/${year}`
+  filteredSales.forEach((sale) => {
+    try {
+      const d = new Date(sale.created_at)
+      const year = d.getFullYear()
+      const month = String(d.getMonth() + 1).padStart(2, '0')
+      const day = String(d.getDate()).padStart(2, '0')
+      const localDateStr = `${day}/${month}/${year}`
 
-        if (!groups[localDateStr]) {
-          groups[localDateStr] = {
-            dateStr: localDateStr,
-            total: 0,
-            count: 0,
-            cash: 0,
-            transfer: 0,
-            card: 0
-          }
+      if (!groups[localDateStr]) {
+        groups[localDateStr] = {
+          dateStr: localDateStr,
+          total: 0,
+          count: 0,
+          cash: 0,
+          transfer: 0,
+          card: 0
         }
-
-        groups[localDateStr].total += sale.total_amount
-        groups[localDateStr].count += 1
-        
-        sale.payments.forEach((p) => {
-          if (p.method === 'cash') groups[localDateStr].cash += p.amount
-          if (p.method === 'transfer') groups[localDateStr].transfer += p.amount
-          if (p.method === 'card') groups[localDateStr].card += p.amount
-        })
-      } catch (e) {
-        console.error('Error grouping sale by date', e)
       }
-    })
 
-    // Return sorted by date (newest first)
-    return Object.values(groups).sort((a, b) => {
-      const [dayA, monthA, yearA] = a.dateStr.split('/').map(Number)
-      const [dayB, monthB, yearB] = b.dateStr.split('/').map(Number)
-      const dateA = new Date(yearA, monthA - 1, dayA)
-      const dateB = new Date(yearB, monthB - 1, dayB)
-      return dateB.getTime() - dateA.getTime()
-    })
-  }, [filteredSales])
+      groups[localDateStr].total += sale.total_amount
+      groups[localDateStr].count += 1
+      
+      sale.payments.forEach((p) => {
+        if (p.method === 'cash') groups[localDateStr].cash += p.amount
+        if (p.method === 'transfer') groups[localDateStr].transfer += p.amount
+        if (p.method === 'card') groups[localDateStr].card += p.amount
+      })
+    } catch (e) {
+      console.error('Error grouping sale by date', e)
+    }
+  })
+
+  // Return sorted by date (newest first)
+  const dailyData = Object.values(groups).sort((a, b) => {
+    const [dayA, monthA, yearA] = a.dateStr.split('/').map(Number)
+    const [dayB, monthB, yearB] = b.dateStr.split('/').map(Number)
+    const dateA = new Date(yearA, monthA - 1, dayA)
+    const dateB = new Date(yearB, monthB - 1, dayB)
+    return dateB.getTime() - dateA.getTime()
+  })
 
   // Track active quick-filter
   const [activeQuickFilter, setActiveQuickFilter] = useState<'today' | '7d' | '30d' | 'month' | 'custom'>('30d')
@@ -223,7 +216,7 @@ export function SalesHistory({
               return (
                 <button
                   key={key}
-                  onClick={() => applyQuickFilter(key as any)}
+                  onClick={() => applyQuickFilter(key as 'today' | '7d' | '30d' | 'month')}
                   className={[
                     'inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all duration-150 cursor-pointer',
                     isActive

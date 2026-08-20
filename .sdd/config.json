@@ -1,0 +1,16 @@
+{
+  "project": "ERP-Tiendas",
+  "framework": "Next.js 16 (App Router)",
+  "language": "TypeScript",
+  "styling": "Tailwind CSS v4 + Shadcn UI",
+  "database": "Supabase (PostgreSQL, Auth, RLS)",
+  "packageManager": "pnpm",
+  "testing": {
+    "framework": null,
+    "buildCommand": "pnpm build",
+    "lintCommand": "pnpm lint",
+    "strictTDD": false
+  },
+  "sddVersion": "1.0",
+  "mode": "spec-driven-development"
+}

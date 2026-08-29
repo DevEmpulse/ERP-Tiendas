@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { updateSession } from '@/utils/supabase/middleware'
+import { homeFor, POS_ROLES, STOCK_ROLES } from '@/lib/roles'
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
@@ -37,7 +38,7 @@ export async function proxy(request: NextRequest) {
     return redirectResponse
   }
 
-  const isProtectedRoute = pathname.startsWith('/admin') || pathname.startsWith('/employee') || pathname.startsWith('/superadmin')
+  const isProtectedRoute = pathname.startsWith('/admin') || pathname.startsWith('/encargado') || pathname.startsWith('/employee') || pathname.startsWith('/superadmin')
 
   // 2. Handle unauthenticated users
   if (!user) {
@@ -89,18 +90,12 @@ export async function proxy(request: NextRequest) {
 
   // 4. Redirect authenticated users away from public auth pages
   if (pathname === '/login') {
-    if (role === 'superadmin') {
-      return redirectWithCookies('/superadmin')
-    }
-    return redirectWithCookies(role === 'admin' ? '/admin' : '/employee')
+    return redirectWithCookies(homeFor(role))
   }
 
   // 5. Root page redirection
   if (pathname === '/') {
-    if (role === 'superadmin') {
-      return redirectWithCookies('/superadmin')
-    }
-    return redirectWithCookies(role === 'admin' ? '/admin' : '/employee')
+    return redirectWithCookies(homeFor(role))
   }
 
   // 6. Access control for /superadmin
@@ -113,14 +108,22 @@ export async function proxy(request: NextRequest) {
   // 7. Access control for /admin
   if (pathname.startsWith('/admin')) {
     if (role !== 'admin') {
-      return redirectWithCookies(role === 'superadmin' ? '/superadmin' : '/employee')
+      return redirectWithCookies(homeFor(role))
     }
   }
 
-  // 8. Access control for /employee
+  // 8. Access control for /encargado
+  if (pathname.startsWith('/encargado')) {
+    if (role !== 'encargado') {
+      return redirectWithCookies(homeFor(role))
+    }
+  }
+
+  // 9. Access control for /employee
   if (pathname.startsWith('/employee')) {
-    if (role !== 'admin' && role !== 'employee') {
-      return redirectWithCookies(role === 'superadmin' ? '/superadmin' : '/login')
+    const isEmployeeAllowed = role === 'admin' || (POS_ROLES as readonly string[]).includes(role ?? '') || (STOCK_ROLES as readonly string[]).includes(role ?? '')
+    if (!isEmployeeAllowed) {
+      return redirectWithCookies(homeFor(role))
     }
   }
 

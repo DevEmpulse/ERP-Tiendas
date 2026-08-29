@@ -5,12 +5,13 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import EmployeeDashboard from '@/components/employee/employee-dashboard'
 import { Skeleton } from '@/components/ui/skeleton'
+import { canAccess, homeFor, type Role } from '@/lib/roles'
 
 interface Profile {
   id: string
   store_id: string
   name: string | null
-  role: string | null
+  role: Role | null
   email: string | null
   branch_id: string | null
 }
@@ -19,6 +20,7 @@ export default function EmployeePage() {
   const router = useRouter()
   const [profile, setProfile] = useState<Profile | null>(null)
   const [storeName, setStoreName] = useState<string>('')
+  const [branchName, setBranchName] = useState<string>('')
   const [paperWidth, setPaperWidth] = useState<'58mm' | '80mm'>('58mm')
   const [loading, setLoading] = useState(true)
 
@@ -47,15 +49,34 @@ export default function EmployeePage() {
         return
       }
 
-      if (profileData.role !== 'employee' && profileData.role !== 'admin') {
+      if (!canAccess('/employee', profileData.role)) {
+        router.push(homeFor(profileData.role))
+        return
+      }
+
+      // If branch-scoped role has no branch, redirect to login
+      if (profileData.role !== 'admin' && !profileData.branch_id) {
         router.push('/login')
         return
       }
 
-      const { stores, ...profile } = profileData as unknown as Profile & { stores: { name: string; thermal_paper_width?: '58mm' | '80mm' } | null }
-      setProfile(profile)
+      const { stores, ...profileObj } = profileData as unknown as Profile & { stores: { name: string; thermal_paper_width?: '58mm' | '80mm' } | null }
+      setProfile(profileObj)
       setStoreName(stores?.name ?? '')
       setPaperWidth((stores?.thermal_paper_width as '58mm' | '80mm') ?? '58mm')
+
+      if (profileObj.branch_id) {
+        const { data: branchData } = await supabase
+          .from('branches')
+          .select('name')
+          .eq('id', profileObj.branch_id)
+          .single()
+
+        if (branchData) {
+          setBranchName(branchData.name)
+        }
+      }
+
       setLoading(false)
     }
 
@@ -125,7 +146,7 @@ export default function EmployeePage() {
       <div className="absolute top-[-5%] left-[-5%] h-[250px] w-[250px] rounded-full bg-neutral-200/30 blur-[80px] dark:bg-neutral-800/10 pointer-events-none" />
       <div className="absolute bottom-[-5%] right-[-5%] h-[250px] w-[250px] rounded-full bg-zinc-200/30 blur-[80px] dark:bg-zinc-800/10 pointer-events-none" />
       
-      {profile && <EmployeeDashboard profile={profile} storeName={storeName} paperWidth={paperWidth} />}
+      {profile && <EmployeeDashboard profile={profile} storeName={storeName} branchName={branchName} paperWidth={paperWidth} />}
     </div>
   )
 }

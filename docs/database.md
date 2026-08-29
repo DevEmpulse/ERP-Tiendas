@@ -184,60 +184,42 @@ Se ejecuta automáticamente cada vez que un usuario se registra en `auth.users`:
 
 ---
 
+### 2. `profiles` (Perfiles de Usuarios)
+Asocia los usuarios de `auth.users` a una tienda y determina su rol en la plataforma.
+- `id` (`uuid`, PK, FK -> `auth.users.id` ON DELETE CASCADE): ID de autenticación.
+- `store_id` (`uuid`, FK -> `stores.id` ON DELETE CASCADE): Tienda a la que pertenece el usuario.
+- `email` (`text`, UNIQUE): Correo electrónico del usuario.
+- `name` (`text`): Nombre legible del usuario.
+- `role` (`text`, CHECK `in ('admin', 'encargado', 'caja', 'stock', 'employee', 'superadmin')`): Rol dentro del sistema.
+- `branch_id` (`uuid`, NULL, FK -> `branches.id` ON DELETE NO ACTION): Sucursal asignada. Obligatorio (`NOT NULL`) para `encargado`, `caja`, `stock`, `employee`; `admin` y `superadmin` quedan obligatoriamente en `NULL`. CHECK `profiles_employee_branch_check`: `CASE WHEN role IN ('encargado','caja','stock','employee') THEN branch_id IS NOT NULL WHEN role IN ('admin','superadmin') THEN branch_id IS NULL ELSE true END`.
+- `created_at` (`timestamptz`, DEFAULT `now()`): Fecha de creación del perfil.
+
+---
+
 ## 🛡️ Políticas de Row Level Security (RLS)
 
 | Tabla | Operaciones | Condición de Permiso (`USING` / `WITH CHECK`) |
 | :--- | :--- | :--- |
 | `stores` | ALL | `id = public.get_current_user_store_id()` o `role = 'superadmin'` |
 | `profiles` | SELECT | `store_id = public.get_current_user_store_id() OR id = auth.uid()` |
-| `profiles` | ALL | `store_id = public.get_current_user_store_id() AND (id = auth.uid() OR role = 'admin')` |
-| `clients` | ALL | `store_id = public.get_current_user_store_id()` |
-| `sales` | ALL | `store_id = public.get_current_user_store_id()` (sin predicado de sucursal — ver nota abajo) |
-| `product_price_rules` | ALL | `store_id = public.get_current_user_store_id()` |
-| `categories` / `products` | ALL | `store_id = public.get_current_user_store_id()` (catálogo compartido entre sucursales, ver "¿Qué forma usar?") |
-| `branches` | SELECT | `store_id = public.get_current_user_store_id()` (toda la tienda puede leer) |
-| `branches` | ALL (admin) | `store_id = public.get_current_user_store_id() AND get_current_user_role() IN ('admin','superadmin')` |
-| `allowed_admins` | ALL | `public.get_current_user_role() = 'superadmin'` |
-| `branch_stock` | ALL (Forma B) | Ver "Dos formas de RLS" abajo — admin/superadmin ven todas las sucursales de su tienda, empleados solo la propia |
-| `stock_movements` | SELECT + INSERT (Forma B, sin UPDATE/DELETE) | Igual predicado que `branch_stock`, partido en dos políticas; ledger inmutable — ver tabla 11 arriba |
+| `profiles` | ALL | Admins gestionan perfiles de su tienda; encargados gestionan únicamente `caja`/`stock`/`employee` de su propia sucursal con `WITH CHECK` CASE estricto |
+| `categories` / `products` / `product_price_rules` | SELECT / ALL | **Forma C**: Lectura para toda la tienda (`SELECT`); escritura (`FOR ALL`) solo para `admin`, `superadmin` y `encargado` |
+| `clients` | SELECT / ALL / INSERT | **Forma C**: Lectura para toda la tienda; escritura completa para `admin`, `superadmin`, `encargado`; `caja` y `employee` tienen permiso exclusivo de `INSERT` para crear clientes en caja |
+| `sales` | SELECT / INSERT / UPDATE / DELETE | **Forma D**: Verb-split y sucursal. Admin/superadmin: global. Encargado: toda su sucursal. Caja/employee: sucursal propia para SELECT/INSERT, y UPDATE/DELETE limitado a sus propias ventas (`employee_id = auth.uid()`). Stock: solo SELECT de su sucursal |
+| `sale_items` | SELECT / INSERT / UPDATE / DELETE | **Forma D**: Mismo esquema que `sales`; UPDATE/DELETE de caja/employee validado mediante subquery `EXISTS` en `sales` por creador |
+| `branches` | SELECT / ALL | SELECT para toda la tienda; escritura solo `admin`/`superadmin` |
+| `branch_stock` | ALL (Forma B) | Admin/superadmin ven todas las sucursales; roles de sucursal (`encargado`, `caja`, `stock`, `employee`) solo su sucursal |
+| `stock_movements` | SELECT + INSERT (Forma B) | Lectura e inserción según ámbito de sucursal; inmutable sin UPDATE/DELETE |
 
-### Dos formas de RLS: tienda completa vs. sucursal
+### Formas de Predicados RLS
 
-Desde que existe `branches`, conviven dos formas de predicado. **Regla para cualquier tabla nueva**: si las filas describen algo que la tienda *comparte* entre sucursales (catálogo, clientes, reglas de precio), usar la Forma A. Si describen algo que existe *en* una sucursal (stock, caja, contadores por sucursal), usar la Forma B.
+1. **Forma A (Tienda completa)**: `store_id = public.get_current_user_store_id()`.
+2. **Forma B (Sucursal simple)**: `store_id = get_current_user_store_id() AND (role IN ('admin','superadmin') OR branch_id = get_current_user_branch_id())`.
+3. **Forma C (Tienda completa, escritura restringida por rol)**:
+   - Lectura libre para usuarios autenticados de la misma tienda.
+   - Escritura condicionada a `role IN ('admin', 'superadmin', 'encargado')`.
+4. **Forma D (Sucursal y división por verbo / autoría)**:
+   - `SELECT`: lectura según sucursal (`admin`/`superadmin` global; resto por `branch_id = get_current_user_branch_id()`).
+   - `INSERT`: `admin`/`superadmin` global; `encargado`/`caja`/`employee` en su propia sucursal.
+   - `UPDATE`/`DELETE`: `admin`/`superadmin` global; `encargado` en su sucursal; `caja`/`employee` en su sucursal y únicamente si `employee_id = (select auth.uid())` (en `sale_items` vía subconsulta `EXISTS`).
 
-```sql
--- Forma A — tabla de TIENDA COMPLETA (sin cambios; categories, products, sale_items, sales, clients)
-CREATE POLICY "Users can manage <thing> in their store" ON public.<table>
-  FOR ALL TO authenticated
-  USING      (store_id = public.get_current_user_store_id())
-  WITH CHECK (store_id = public.get_current_user_store_id());
-
--- Forma B — tabla de SUCURSAL (consumidores: branch_stock, stock_movements — Stock Phase 2)
--- Requiere: <table>.store_id uuid NOT NULL, <table>.branch_id uuid NOT NULL.
--- Admin/superadmin ven todas las sucursales de su tienda; empleados quedan
--- restringidos a su propia sucursal a nivel de base de datos.
-CREATE POLICY "Users can manage <thing> in their branch" ON public.<table>
-  FOR ALL TO authenticated
-  USING (
-    store_id = public.get_current_user_store_id()
-    AND (
-      public.get_current_user_role() IN ('admin', 'superadmin')
-      OR branch_id = public.get_current_user_branch_id()
-    )
-  )
-  WITH CHECK (
-    store_id = public.get_current_user_store_id()
-    AND (
-      public.get_current_user_role() IN ('admin', 'superadmin')
-      OR branch_id = public.get_current_user_branch_id()
-    )
-  );
-```
-
-`sales.branch_id` se agrega solo para atribución: la política de `sales` se mantiene en Forma A (tienda completa) deliberadamente, para que los empleados sigan viendo todas las ventas de su tienda, incluidas las históricas con `branch_id` NULL.
-
-`stock_movements` usa la Forma B pero **partida** en dos políticas (`FOR SELECT` y `FOR INSERT`, con el mismo predicado booleano), sin una política `FOR ALL` — al no existir ninguna política de `UPDATE`/`DELETE`, RLS deniega ambos verbos por defecto, reforzando el carácter de ledger append-only.
-
-### Claves de coherencia entre tienda y sucursal/producto
-
-`branches` y `products` tienen además `UNIQUE (store_id, id)` (adicional a su PK simple). Esto permite que `branch_stock`/`stock_movements` declaren `FOREIGN KEY (store_id, branch_id) REFERENCES branches (store_id, id)` en lugar de un FK simple a `branches(id)`: sin la clave compuesta, un admin podría escribir `branch_stock(store_id = mi_tienda, branch_id = sucursal_de_otra_tienda)` — pasaría tanto RLS como un FK simple, y produciría una fila que nadie podría conciliar nunca. Costo aceptado: una fila con FK compuesta no es un objetivo de *embed* resoluble en PostgREST, así que la exportación de catálogo lee `products` y `branch_stock` en dos consultas separadas y las combina en el cliente.

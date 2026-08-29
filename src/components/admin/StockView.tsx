@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { StockAdjustDialog } from '@/components/stock/StockAdjustDialog'
 import {
   Dialog,
   DialogContent,
@@ -38,6 +39,10 @@ import {
   Printer,
   FileSpreadsheet,
   PackagePlus,
+  Search,
+  FilterX,
+  X,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { useToast, Toaster } from '@/components/ui/toast'
 import { ProductLabelPrinter, type LabelProduct } from './ProductLabel'
@@ -132,6 +137,12 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
   const [branchStock, setBranchStock] = useState<Map<string, number>>(new Map())
   const [productsLoading, setProductsLoading] = useState(true)
 
+  // ── Search & Filter state ──────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState<string>('all')
+  const [stockFilter, setStockFilter] = useState<'all' | 'in_stock' | 'out_of_stock' | 'low_stock'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all')
+
   const [isProductModalOpen, setIsProductModalOpen] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [productForm, setProductForm] = useState(emptyProductForm())
@@ -144,11 +155,6 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
   const [togglingProduct, setTogglingProduct] = useState(false)
 
   const [adjustTarget, setAdjustTarget] = useState<Product | null>(null)
-  const [adjustDelta, setAdjustDelta] = useState('')
-  const [adjustReason, setAdjustReason] = useState<AdjustReason>('manual_adjustment')
-  const [adjustNote, setAdjustNote] = useState('')
-  const [adjusting, setAdjusting] = useState(false)
-  const [adjustErrorMsg, setAdjustErrorMsg] = useState<string | null>(null)
 
   const [historyTarget, setHistoryTarget] = useState<Product | null>(null)
   const [historyMovements, setHistoryMovements] = useState<StockMovement[]>([])
@@ -396,45 +402,8 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
   }
 
   // ── Stock adjustment ───────────────────────────────────────────────────────
-
   const openAdjustDialog = (product: Product) => {
     setAdjustTarget(product)
-    setAdjustDelta('')
-    setAdjustReason('manual_adjustment')
-    setAdjustNote('')
-    setAdjustErrorMsg(null)
-  }
-
-  const handleAdjustSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!adjustTarget || !branchId) return
-
-    const delta = parseInt(adjustDelta, 10)
-    if (!delta || delta === 0 || Number.isNaN(delta)) {
-      setAdjustErrorMsg('Ingresá una cantidad distinta de cero (usá negativos para restar).')
-      return
-    }
-
-    const target = adjustTarget
-    setAdjustTarget(null)
-    setAdjusting(true)
-    try {
-      const { error } = await supabase.rpc('adjust_branch_stock', {
-        p_branch_id: branchId,
-        p_product_id: target.id,
-        p_delta: delta,
-        p_reason: adjustReason,
-        p_note: adjustNote.trim() || null,
-      })
-      if (error) throw error
-      toast(`Stock de "${target.name}" ajustado en ${branchName ?? 'la sucursal'}.`, 'success')
-      await loadProducts()
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Error al ajustar el stock.'
-      toast(msg, 'error')
-    } finally {
-      setAdjusting(false)
-    }
   }
 
   // ── Movement history ───────────────────────────────────────────────────────
@@ -461,7 +430,84 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
     }
   }
 
+  // ── Filtered products calculation ──────────────────────────────────────────
+
+  const filteredProducts = useMemo(() => {
+    return products.filter((product) => {
+      // Search: name or barcode
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim()
+        const matchName = (product.name || '').toLowerCase().includes(q)
+        const matchBarcode = (product.barcode || '').toLowerCase().includes(q)
+        if (!matchName && !matchBarcode) return false
+      }
+
+      // Category
+      if (categoryFilter !== 'all') {
+        if (categoryFilter === 'none') {
+          if (product.category_id !== null && product.category_id !== '') return false
+        } else if (product.category_id !== categoryFilter) {
+          return false
+        }
+      }
+
+      // Status (Active / Inactive)
+      if (statusFilter === 'active' && !product.is_active) return false
+      if (statusFilter === 'inactive' && product.is_active) return false
+
+      // Stock level (applies when a branch is selected)
+      if (stockFilter !== 'all' && branchId) {
+        const currentStock = branchStock.get(product.id) ?? 0
+        if (stockFilter === 'in_stock' && currentStock <= 0) return false
+        if (stockFilter === 'out_of_stock' && currentStock !== 0) return false
+        if (stockFilter === 'low_stock' && (currentStock <= 0 || currentStock > 5)) return false
+      }
+
+      return true
+    })
+  }, [products, searchQuery, categoryFilter, statusFilter, stockFilter, branchId, branchStock])
+
+  const hasActiveFilters =
+    searchQuery.trim() !== '' ||
+    categoryFilter !== 'all' ||
+    stockFilter !== 'all' ||
+    statusFilter !== 'all'
+
+  const resetFilters = () => {
+    setSearchQuery('')
+    setCategoryFilter('all')
+    setStockFilter('all')
+    setStatusFilter('all')
+  }
+
   // ── Multi-select & label printing ──────────────────────────────────────────
+
+  const allFilteredSelected =
+    filteredProducts.length > 0 &&
+    filteredProducts.every((p) => selectedProductIds.has(p.id))
+
+  const someFilteredSelected =
+    filteredProducts.some((p) => selectedProductIds.has(p.id)) && !allFilteredSelected
+
+  const toggleSelectAllFiltered = () => {
+    if (allFilteredSelected) {
+      setSelectedProductIds((prev) => {
+        const next = new Set(prev)
+        for (const p of filteredProducts) {
+          next.delete(p.id)
+        }
+        return next
+      })
+    } else {
+      setSelectedProductIds((prev) => {
+        const next = new Set(prev)
+        for (const p of filteredProducts) {
+          next.add(p.id)
+        }
+        return next
+      })
+    }
+  }
 
   const toggleSelectProduct = (id: string) => {
     setSelectedProductIds((prev) => {
@@ -763,8 +809,8 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
                   Categoría
                 </Label>
                 <Select
-                  value={productForm.category_id || undefined}
-                  onValueChange={(v) => setProductForm(prev => ({ ...prev, category_id: v as string }))}
+                  value={productForm.category_id || ''}
+                  onValueChange={(v) => setProductForm(prev => ({ ...prev, category_id: (v as string) || '' }))}
                 >
                   <SelectTrigger className="h-10 w-full rounded-xl border-zinc-200 dark:border-zinc-700 text-sm">
                     <SelectValue placeholder="Sin categoría">
@@ -772,6 +818,7 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="">Sin categoría</SelectItem>
                     {categories.map((c) => (
                       <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                     ))}
@@ -861,86 +908,16 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
       </Dialog>
 
       {/* Adjust stock dialog */}
-      <Dialog open={!!adjustTarget} onOpenChange={(open) => { if (!open) setAdjustTarget(null) }}>
-        <DialogContent className="sm:max-w-sm bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl p-0 overflow-hidden">
-          <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-100 dark:border-zinc-800">
-            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
-              <Boxes className="h-4 w-4 text-zinc-400" />
-              Ajustar Stock
-            </DialogTitle>
-            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
-              {adjustTarget?.name} · {branchName ?? 'Sucursal seleccionada'}
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleAdjustSubmit}>
-            <div className="px-6 py-5 space-y-4">
-              <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                  Cantidad (usá negativos para restar)
-                </Label>
-                <Input
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="Ej: 10 o -5"
-                  value={adjustDelta}
-                  onChange={(e) => setAdjustDelta(e.target.value.replace(/[^\d-]/g, ''))}
-                  disabled={adjusting}
-                  className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm font-bold"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">Motivo</Label>
-                <Select value={adjustReason} onValueChange={(v) => setAdjustReason(v as AdjustReason)}>
-                  <SelectTrigger className="h-10 w-full rounded-xl border-zinc-200 dark:border-zinc-700 text-sm">
-                    <SelectValue>
-                      {(value: string) => value === 'restock' ? 'Reposición' : 'Ajuste manual'}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="manual_adjustment">Ajuste manual</SelectItem>
-                    <SelectItem value="restock">Reposición</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">Nota (opcional)</Label>
-                <Input
-                  placeholder="Ej: Conteo físico, mercadería dañada..."
-                  value={adjustNote}
-                  onChange={(e) => setAdjustNote(e.target.value)}
-                  disabled={adjusting}
-                  className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm"
-                />
-              </div>
-              {adjustErrorMsg && (
-                <div className="flex items-start gap-2 p-3 text-xs text-red-600 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-xl font-medium">
-                  <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-                  <span>{adjustErrorMsg}</span>
-                </div>
-              )}
-            </div>
-            <DialogFooter className="px-6 py-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900 flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setAdjustTarget(null)}
-                className="h-9 px-4 rounded-xl border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer text-xs font-semibold flex-1 sm:flex-none"
-              >
-                Cancelar
-              </Button>
-              <Button
-                type="submit"
-                disabled={adjusting}
-                className="h-9 px-5 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex-1 sm:flex-none flex items-center justify-center gap-1.5"
-              >
-                {adjusting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                Confirmar Ajuste
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <StockAdjustDialog
+        product={adjustTarget}
+        onOpenChange={(open) => { if (!open) setAdjustTarget(null) }}
+        branchId={branchId}
+        branchName={branchName}
+        currentStock={adjustTarget ? (branchStock.get(adjustTarget.id) ?? 0) : undefined}
+        onAdjusted={async () => {
+          await loadProducts()
+        }}
+      />
 
       {/* Movement history dialog */}
       <Dialog open={!!historyTarget} onOpenChange={(open) => { if (!open) setHistoryTarget(null) }}>
@@ -1249,10 +1226,127 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
               </div>
             </div>
 
+            {/* Filters & Search Toolbar */}
+            <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+              {/* Left: Search input */}
+              <div className="relative flex-1 min-w-[240px] max-w-md">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400 pointer-events-none" />
+                <Input
+                  placeholder="Buscar por nombre o código de barra..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9 pr-8 h-9 rounded-xl border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs sm:text-sm focus-visible:ring-zinc-400"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors p-0.5 rounded cursor-pointer"
+                    title="Limpiar búsqueda"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Right: Filter dropdowns & Clear button */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Category filter */}
+                <Select value={categoryFilter} onValueChange={(v) => setCategoryFilter(v as string)}>
+                  <SelectTrigger className="h-9 min-w-[140px] rounded-xl border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs">
+                    <SelectValue>
+                      {(val: string) => {
+                        if (!val || val === 'all') return 'Categoría: Todas'
+                        if (val === 'none') return 'Sin categoría'
+                        const cat = categories.find((c) => c.id === val)
+                        return cat ? `Cat: ${cat.name}` : 'Categoría: Todas'
+                      }}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas las categorías</SelectItem>
+                    <SelectItem value="none">Sin categoría</SelectItem>
+                    {categories.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                {/* Stock filter (active when branchId is present) */}
+                {branchId && (
+                  <Select value={stockFilter} onValueChange={(v) => setStockFilter(v as 'all' | 'in_stock' | 'out_of_stock' | 'low_stock')}>
+                    <SelectTrigger className="h-9 min-w-[130px] rounded-xl border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs">
+                      <SelectValue>
+                        {(val: string) => {
+                          if (val === 'in_stock') return 'Con stock (>0)'
+                          if (val === 'low_stock') return 'Stock bajo (≤5)'
+                          if (val === 'out_of_stock') return 'Sin stock (0)'
+                          return 'Stock: Todos'
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todos los stocks</SelectItem>
+                      <SelectItem value="in_stock">Con stock (&gt; 0)</SelectItem>
+                      <SelectItem value="low_stock">Stock bajo (&le; 5)</SelectItem>
+                      <SelectItem value="out_of_stock">Sin stock (0)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+
+                {/* Status filter */}
+                <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as 'all' | 'active' | 'inactive')}>
+                  <SelectTrigger className="h-9 min-w-[120px] rounded-xl border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs">
+                    <SelectValue>
+                      {(val: string) => {
+                        if (val === 'active') return 'Solo activos'
+                        if (val === 'inactive') return 'Solo desactivados'
+                        return 'Estado: Todos'
+                      }}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos los estados</SelectItem>
+                    <SelectItem value="active">Solo activos</SelectItem>
+                    <SelectItem value="inactive">Solo desactivados</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                {/* Reset filters button */}
+                {hasActiveFilters && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={resetFilters}
+                    className="h-9 px-2.5 rounded-xl text-xs font-semibold text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer flex items-center gap-1.5"
+                    title="Restablecer filtros"
+                  >
+                    <FilterX className="h-3.5 w-3.5" />
+                    Limpiar
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Results count indicator */}
+            {!productsLoading && products.length > 0 && (
+              <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400 px-0.5">
+                <span>
+                  Mostrando <strong className="text-zinc-700 dark:text-zinc-200">{filteredProducts.length}</strong> de{' '}
+                  <strong className="text-zinc-700 dark:text-zinc-200">{products.length}</strong> productos
+                  {hasActiveFilters && (
+                    <span className="ml-1.5 text-emerald-600 dark:text-emerald-400 font-medium">
+                      (filtros aplicados)
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+
             {/* Table / Empty state */}
             {productsLoading ? (
               <div className="space-y-2">
-                {[1, 2, 3].map(i => (
+                {[1, 2, 3].map((i) => (
                   <div key={i} className="h-16 rounded-xl bg-zinc-100 dark:bg-zinc-800/50 animate-pulse" />
                 ))}
               </div>
@@ -1286,11 +1380,43 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
                   </Button>
                 </div>
               </div>
+            ) : filteredProducts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-2xl bg-zinc-50/50 dark:bg-zinc-900/50">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-100 dark:bg-zinc-800 mb-3">
+                  <SlidersHorizontal className="h-5 w-5 text-zinc-400" />
+                </div>
+                <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  No se encontraron productos
+                </h3>
+                <p className="text-xs text-zinc-400 dark:text-zinc-500 max-w-xs mb-4">
+                  No hay productos que coincidan con la búsqueda o los filtros seleccionados.
+                </p>
+                <Button
+                  onClick={resetFilters}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-3 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+                >
+                  <FilterX className="h-3.5 w-3.5" />
+                  Limpiar filtros
+                </Button>
+              </div>
             ) : (
               <div className="rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900 overflow-hidden shadow-xs overflow-x-auto">
                 <div className="min-w-[900px]">
                   <div className="grid grid-cols-[28px_1.4fr_1fr_110px_100px_100px_90px_180px] gap-3 px-5 py-3 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800">
-                    <span />
+                    <div className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={allFilteredSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = someFilteredSelected
+                        }}
+                        onChange={toggleSelectAllFiltered}
+                        className="h-4 w-4 rounded border-zinc-300 dark:border-zinc-600 accent-zinc-900 dark:accent-zinc-50 cursor-pointer"
+                        title={allFilteredSelected ? 'Deseleccionar todos' : 'Seleccionar todos los visibles'}
+                      />
+                    </div>
                     <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Producto</span>
                     <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Categoría</span>
                     <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Código</span>
@@ -1301,80 +1427,93 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
                   </div>
 
                   <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                    {products.map((product) => (
-                      <div
-                        key={product.id}
-                        className={`grid grid-cols-[28px_1.4fr_1fr_110px_100px_100px_90px_180px] gap-3 px-5 py-3 items-center hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 transition-colors duration-150 group ${
-                          !product.is_active ? 'opacity-50' : ''
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedProductIds.has(product.id)}
-                          onChange={() => toggleSelectProduct(product.id)}
-                          className="h-4 w-4 rounded border-zinc-300 dark:border-zinc-600 accent-zinc-900 dark:accent-zinc-50 cursor-pointer"
-                        />
-                        <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 truncate">
-                          {product.name}
-                        </span>
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-                          {categories.find(c => c.id === product.category_id)?.name ?? '—'}
-                        </span>
-                        <span className="text-[11px] font-mono text-zinc-400 tracking-wide">{product.barcode}</span>
-                        <span className="text-sm text-zinc-600 dark:text-zinc-400 text-right tabular-nums">
-                          {formatCLP(product.purchase_price)}
-                        </span>
-                        <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 text-right tabular-nums">
-                          {formatCLP(product.sale_price)}
-                        </span>
-                        <span className="text-sm font-bold text-center tabular-nums">
-                          {branchId ? (branchStock.get(product.id) ?? 0) : '—'}
-                        </span>
-                        <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                          <button
-                            onClick={() => openEditProduct(product)}
-                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
-                            title="Editar"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            onClick={() => openAdjustDialog(product)}
-                            disabled={!branchId}
-                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="Ajustar stock"
-                          >
-                            <Boxes className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            onClick={() => openHistoryDialog(product)}
-                            disabled={!branchId}
-                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="Historial de movimientos"
-                          >
-                            <History className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handlePrintSingle(product)}
-                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
-                            title="Imprimir etiqueta"
-                          >
-                            <Printer className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            onClick={() => confirmToggleProduct(product)}
-                            className={`h-7 w-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
-                              product.is_active
-                                ? 'text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-950/30'
-                                : 'text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:text-emerald-400 dark:hover:bg-emerald-950/30'
+                    {filteredProducts.map((product) => {
+                      const stockVal = branchStock.get(product.id) ?? 0
+                      return (
+                        <div
+                          key={product.id}
+                          className={`grid grid-cols-[28px_1.4fr_1fr_110px_100px_100px_90px_180px] gap-3 px-5 py-3 items-center hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 transition-colors duration-150 group ${
+                            !product.is_active ? 'opacity-50' : ''
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedProductIds.has(product.id)}
+                            onChange={() => toggleSelectProduct(product.id)}
+                            className="h-4 w-4 rounded border-zinc-300 dark:border-zinc-600 accent-zinc-900 dark:accent-zinc-50 cursor-pointer"
+                          />
+                          <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 truncate">
+                            {product.name}
+                          </span>
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+                            {categories.find((c) => c.id === product.category_id)?.name ?? '—'}
+                          </span>
+                          <span className="text-[11px] font-mono text-zinc-400 tracking-wide">{product.barcode}</span>
+                          <span className="text-sm text-zinc-600 dark:text-zinc-400 text-right tabular-nums">
+                            {formatCLP(product.purchase_price)}
+                          </span>
+                          <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 text-right tabular-nums">
+                            {formatCLP(product.sale_price)}
+                          </span>
+                          <span
+                            className={`text-sm font-bold text-center tabular-nums ${
+                              branchId
+                                ? stockVal <= 0
+                                  ? 'text-red-500 dark:text-red-400'
+                                  : stockVal <= 5
+                                  ? 'text-amber-600 dark:text-amber-400'
+                                  : 'text-zinc-900 dark:text-zinc-50'
+                                : 'text-zinc-400'
                             }`}
-                            title={product.is_active ? 'Desactivar' : 'Reactivar'}
                           >
-                            {product.is_active ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
-                          </button>
+                            {branchId ? stockVal : '—'}
+                          </span>
+                          <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                            <button
+                              onClick={() => openEditProduct(product)}
+                              className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
+                              title="Editar"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => openAdjustDialog(product)}
+                              disabled={!branchId}
+                              className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                              title="Ajustar stock"
+                            >
+                              <Boxes className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => openHistoryDialog(product)}
+                              disabled={!branchId}
+                              className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                              title="Historial de movimientos"
+                            >
+                              <History className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handlePrintSingle(product)}
+                              className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
+                              title="Imprimir etiqueta"
+                            >
+                              <Printer className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => confirmToggleProduct(product)}
+                              className={`h-7 w-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                                product.is_active
+                                  ? 'text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-950/30'
+                                  : 'text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:text-emerald-400 dark:hover:bg-emerald-950/30'
+                              }`}
+                              title={product.is_active ? 'Desactivar' : 'Reactivar'}
+                            >
+                              {product.is_active ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               </div>

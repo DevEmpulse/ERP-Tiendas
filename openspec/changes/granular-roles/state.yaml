@@ -12,18 +12,63 @@ phases:
     status: done
     artifact: proposal.md
   spec:
-    status: pending
+    status: done
+    artifacts:
+      - specs/granular-roles/spec.md
+      - specs/role-aware-data-access/spec.md
+      - specs/product-catalog/spec.md
+      - specs/branch-scoped-access/spec.md
+    note: >
+      sale-line-items not written as a separate delta: the proposal's
+      Modified Capabilities entry for it (sale_items RLS gains the
+      role/branch predicate; SECURITY INVOKER triggers keep working) is
+      fully covered by role-aware-data-access's Shape D requirement and its
+      trigger-continuity scenario, so a redundant file was skipped.
   design:
-    status: pending
+    status: done
+    artifact: design.md
+    note: >
+      Full section 16 DDL (role CHECK, 3 employee RPCs, adjust_branch_stock
+      widening, Shape C on 4 tables, Shape D verb-split on sales/sale_items,
+      profiles CASE-based target-role WITH CHECK, generalized branch CHECK
+      last, rollback block) plus the /encargado route tree, /employee
+      caja-vs-stock dispatch, StockAdjustDialog extraction and MySalesView
+      correction UI. Live migration.sql re-verified: the exploration's line
+      citations had NOT drifted. Two findings beyond the proposal: clients and
+      sales each carry TWO policies (a store-wide FOR SELECT at :86-89/:98-101
+      plus the FOR ALL), so sales must drop BOTH; and the existing profiles
+      policy's `id = auth.uid()` disjunct is a LIVE self-promotion hole today,
+      not merely latent for encargado.
   tasks:
-    status: pending
+    status: done
+    artifact: tasks.md
+    note: >
+      Design's proposed 4-slice split undercounts real per-file diff size, so it was
+      expanded to 7 dependency-ordered PRs to respect the 400-line review budget while
+      preserving every ordering constraint: SQL 16.1-16.3 (PR1) -> Shape C/D 16.4-16.5
+      (PR2) -> profiles escalation fix + generalized branch CHECK 16.6-16.8, LAST (PR3)
+      -> /encargado route tree (PR4) and /employee stock arm (PR5) and /employee caja
+      arm (PR6), independent of each other but all needing PR3 -> UserManager rework +
+      final build/advisors gate (PR7). src/lib/roles.ts moved to PR2 (not the route-tree
+      slice) because the Shape C client-rename guard needs CATALOG_WRITE_ROLES
+      immediately. Estimated total ~1750 authored lines; 400-line budget risk High;
+      chain strategy left pending for the user to choose (stacked-to-main vs
+      feature-branch-chain vs size-exception).
   apply:
     status: pending
   verify:
     status: pending
   archive:
     status: pending
-next_recommended: sdd-spec-and-design
+next_recommended: sdd-apply
+review_workload_decision:
+  resolved_by: user
+  decision: >
+    size:exception accepted - single PR, not chained. Same choice as
+    store-branches and stock-phase2, despite this being explicitly flagged as
+    the highest-risk phase (security-sensitive RLS + privilege-escalation fix)
+    and offered chaining as the recommended option this time.
+  delivery_strategy_for_apply: size:exception
 status: in_progress
 triggered_by: >
   Queued from store-branches/state.yaml's next_change_queued block: user requested a
@@ -62,13 +107,15 @@ adjust_branch_stock_followup: >
   adjust_branch_stock() currently hard-rejects any role NOT IN ('admin','superadmin').
   Exploration recommends this widening be a named follow-up task in this change's
   task list, not an in-scope redesign of that already-shipped RPC.
-proposal_open_questions: >
-  proposal.md's "Proposal question round" raises 5 unresolved forks in the
-  table-by-table RLS matrix, each with an assumed default already written into
-  the proposal: (1) caja INSERT on clients; (2) caja UPDATE/DELETE on sales;
-  (3) caja sales visibility store-wide vs own-branch; (4) stock read access to
-  sales; (5) encargado write access to the store-wide product/price catalog.
-  Awaiting user confirmation before sdd-spec/sdd-design encode them.
+proposal_open_questions_resolved: >
+  All 5 forks resolved by the user: (1) caja gets SELECT+INSERT on clients -
+  confirmed as assumed; (2) caja CAN correct/void their own sale (employee_id =
+  auth.uid(), own branch) - CHANGED from the assumed "no", this is new UI scope,
+  no edit/void affordance exists under /employee/* today; (3) caja sees only own
+  branch's sales, knowingly reversing store-branches' "Sales RLS Remains
+  Store-Wide" requirement - confirmed as assumed; (4) stock gets read-only sales
+  access at own branch - confirmed as assumed; (5) encargado gets full write
+  access to the store-wide catalog/prices - confirmed as assumed.
 production_data_verified_by_orchestrator: >
   Directly verified via execute_sql (2026-08-29): 3 stores, 4 profiles (2 admin,
   1 employee, 1 superadmin), 4 branches, 26 products (confirms the earlier Excel

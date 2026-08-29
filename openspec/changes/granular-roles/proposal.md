@@ -248,6 +248,9 @@ produces a route nobody can pass. Snapshot before applying to production.
       `adjust_branch_stock` for their own branch, and are rejected for another branch.
 - [ ] A sale created by a `caja` still decrements that branch's stock exactly once
       (the `SECURITY INVOKER` triggers still pass under the new policies).
+- [ ] A `caja` can correct or void a sale they created themselves (stock reverses
+      correctly on delete, same trigger path as an admin edit today), but cannot
+      touch a sale created by a different employee, even at their own branch.
 - [ ] `npm run build` passes; `get_advisors` reports no new security findings.
 
 ## Proposal question round — RESOLVED (user decision)

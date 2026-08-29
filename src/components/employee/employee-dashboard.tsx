@@ -4,8 +4,11 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import SalesForm from './sales-form'
+import { MySalesView } from './MySalesView'
+import { StockAdjustmentView } from './StockAdjustmentView'
 import { Button } from '@/components/ui/button'
-import { LogOut, Store } from 'lucide-react'
+import { LogOut, Store, PlusCircle, Receipt, Boxes } from 'lucide-react'
+import { STOCK_ROLES, type Role } from '@/lib/roles'
 
 interface Profile {
   id: string
@@ -19,12 +22,19 @@ interface Profile {
 interface EmployeeDashboardProps {
   profile: Profile
   storeName: string
+  branchName?: string
   paperWidth?: '58mm' | '80mm'
 }
 
-export default function EmployeeDashboard({ profile, storeName, paperWidth = '58mm' }: EmployeeDashboardProps) {
+export default function EmployeeDashboard({
+  profile,
+  storeName,
+  branchName,
+  paperWidth = '58mm',
+}: EmployeeDashboardProps) {
   const router = useRouter()
   const [logoutLoading, setLogoutLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState<'form' | 'my_sales'>('form')
 
   const handleLogout = async () => {
     setLogoutLoading(true)
@@ -34,12 +44,14 @@ export default function EmployeeDashboard({ profile, storeName, paperWidth = '58
     router.refresh()
   }
 
+  const isStockRole = (STOCK_ROLES as readonly string[]).includes(profile.role ?? '')
+
   // Fallback display name
-  const displayName = profile.name || (profile.email ? profile.email.split('@')[0] : 'Colaboradora')
+  const displayName = profile.name || (profile.email ? profile.email.split('@')[0] : 'Colaborador/a')
 
   return (
-    <div className="w-full max-w-md mx-auto flex flex-col min-h-screen justify-between pb-8">
-      <div className="flex-1 space-y-6">
+    <div className={`w-full ${isStockRole ? 'max-w-5xl' : 'max-w-md'} mx-auto flex flex-col min-h-screen justify-between pb-8`}>
+      <div className="flex-1 space-y-5">
         {/* Header Section */}
         <header className="flex items-center justify-between p-4 bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md border border-zinc-200/50 dark:border-zinc-800/30 rounded-2xl shadow-sm mt-4">
           <div className="flex items-center gap-3">
@@ -53,6 +65,7 @@ export default function EmployeeDashboard({ profile, storeName, paperWidth = '58
               <p className="text-xs text-zinc-500 dark:text-zinc-400 font-medium flex items-center gap-1 mt-0.5">
                 <Store className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
                 <span>{storeName || 'Mi Tienda'}</span>
+                {branchName && <span className="text-zinc-400">· {branchName}</span>}
               </p>
             </div>
           </div>
@@ -73,15 +86,55 @@ export default function EmployeeDashboard({ profile, storeName, paperWidth = '58
           </Button>
         </header>
 
-        {/* Core Sales Registration Form */}
-        <main className="px-2">
-          <SalesForm profile={profile} storeName={storeName} paperWidth={paperWidth} />
-        </main>
+        {/* Content dispatch by role */}
+        {isStockRole ? (
+          <main className="px-2">
+            <StockAdjustmentView profile={profile} branchName={branchName} />
+          </main>
+        ) : (
+          <div className="space-y-4">
+            {/* Two-tab toggle for POS roles */}
+            <div className="flex rounded-xl bg-zinc-100 dark:bg-zinc-800/70 p-1 border border-zinc-200/80 dark:border-zinc-700 mx-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab('form')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'form'
+                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-zinc-50'
+                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200'
+                }`}
+              >
+                <PlusCircle className="h-3.5 w-3.5" />
+                Nueva venta
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('my_sales')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'my_sales'
+                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-zinc-50'
+                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Receipt className="h-3.5 w-3.5" />
+                Mis ventas de hoy
+              </button>
+            </div>
+
+            <main className="px-2">
+              {activeTab === 'form' ? (
+                <SalesForm profile={profile} storeName={storeName} paperWidth={paperWidth} />
+              ) : (
+                <MySalesView profile={profile} storeName={storeName} paperWidth={paperWidth} />
+              )}
+            </main>
+          </div>
+        )}
       </div>
 
       {/* Footer Branding */}
       <footer className="text-center pt-8 text-[11px] text-zinc-400 dark:text-zinc-500 font-medium tracking-wide">
-        Portal de empleado/a • ERP Tiendas
+        Portal de colaborador/a • ERP Tiendas
       </footer>
     </div>
   )

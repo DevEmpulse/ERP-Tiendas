@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Coins, ArrowLeftRight, CreditCard, Phone, Loader2, CheckCircle2, AlertCircle, User, Package, Tags } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
+import { CATALOG_WRITE_ROLES } from '@/lib/roles'
 
 interface PriceRule {
   id: string
@@ -260,8 +261,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
 
           if (existingClient) {
             clientId = existingClient.id
-            // If user typed a name and it differs from the saved name, update it
-            if (trimmedName && existingClient.name !== trimmedName) {
+            // If user typed a name and it differs from the saved name, update it (only if role has catalog write permissions)
+            if (trimmedName && existingClient.name !== trimmedName && (CATALOG_WRITE_ROLES as readonly string[]).includes(profile.role ?? '')) {
               const { error: updateError } = await supabase
                 .from('clients')
                 .update({ name: trimmedName })

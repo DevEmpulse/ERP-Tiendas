@@ -3,32 +3,19 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
-import { AdminSidebar, AdminSection } from '@/components/admin/AdminSidebar'
+import { EncargadoSidebar } from '@/components/encargado/EncargadoSidebar'
+import { AdminSection } from '@/components/admin/sidebar-items'
 import { DashboardView } from '@/components/admin/DashboardView'
 import { HistoryView } from '@/components/admin/HistoryView'
 import { EmployeesView } from '@/components/admin/EmployeesView'
 import { StaffManagementView } from '@/components/admin/StaffManagementView'
 import { ClientManager } from '@/components/admin/ClientManager'
 import { StockView } from '@/components/admin/StockView'
-import { BranchManager } from '@/components/admin/BranchManager'
-import { StoreSettingsView } from '@/components/admin/StoreSettingsView'
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { groupSales, Sale } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Menu, LogOut, Store, ShieldCheck } from 'lucide-react'
+import { Menu, LogOut, Store, ShieldCheck, MapPin } from 'lucide-react'
 import { Role, homeFor } from '@/lib/roles'
-
-interface Branch {
-  id: string
-  name: string
-}
 
 interface Profile {
   id: string
@@ -45,26 +32,18 @@ interface StoreData {
   thermal_paper_width?: '58mm' | '80mm'
 }
 
-export default function AdminPage() {
+export default function EncargadoPage() {
   const router = useRouter()
   const supabase = createClient()
 
   const [userProfile, setUserProfile] = useState<Profile | null>(null)
   const [storeInfo, setStoreInfo] = useState<StoreData | null>(null)
+  const [branchName, setBranchName] = useState<string>('')
   const [paperWidth, setPaperWidth] = useState<'58mm' | '80mm'>('58mm')
   const [sales, setSales] = useState<Sale[]>([])
   const [employeesList, setEmployeesList] = useState<Profile[]>([])
   const [initialLoading, setInitialLoading] = useState(true)
   const [dataLoading, setDataLoading] = useState(true)
-
-  // Branch selector state — active branches only; exactly one is always selected
-  const [branches, setBranches] = useState<Branch[]>([])
-  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null)
-  const [refreshBranchesKey, setRefreshBranchesKey] = useState(0)
-
-  const triggerRefreshBranches = () => {
-    setRefreshBranchesKey(prev => prev + 1)
-  }
 
   // Layout & Navigation State
   const [activeSection, setActiveSection] = useState<AdminSection>('dashboard')
@@ -87,7 +66,7 @@ export default function AdminPage() {
 
   // 1. Auth & Profile verification
   useEffect(() => {
-    async function verifyAdminAuth() {
+    async function verifyEncargadoAuth() {
       try {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) {
@@ -113,8 +92,8 @@ export default function AdminPage() {
           .eq('id', user.id)
           .single()
 
-        if (profileError || !profileData || profileData.role !== 'admin') {
-          console.error('Unauthorized access to admin dashboard')
+        if (profileError || !profileData || profileData.role !== 'encargado' || !profileData.branch_id) {
+          console.error('Unauthorized access to encargado dashboard')
           router.push(homeFor(profileData?.role))
           return
         }
@@ -126,6 +105,19 @@ export default function AdminPage() {
           setStoreInfo(stores)
           setPaperWidth(stores.thermal_paper_width ?? '58mm')
         }
+
+        // Fetch assigned branch name
+        if (profileData.branch_id) {
+          const { data: branchData } = await supabase
+            .from('branches')
+            .select('name')
+            .eq('id', profileData.branch_id)
+            .single()
+
+          if (branchData) {
+            setBranchName(branchData.name)
+          }
+        }
       } catch (err) {
         console.error('Error verifying auth:', err)
         router.push('/login')
@@ -134,12 +126,14 @@ export default function AdminPage() {
       }
     }
 
-    verifyAdminAuth()
+    verifyEncargadoAuth()
   }, [router, supabase])
 
-  // 2. Fetch sales & employees for this store
+  // 2. Fetch sales & employees for this store & branch
   useEffect(() => {
-    if (!userProfile?.store_id) return
+    if (!userProfile?.store_id || !userProfile?.branch_id) return
+
+    const branchId = userProfile.branch_id
 
     async function loadData() {
       setDataLoading(true)
@@ -169,6 +163,7 @@ export default function AdminPage() {
                 subtotal
               )
             `)
+            .eq('branch_id', branchId)
             .order('created_at', { ascending: false }),
           supabase
             .from('profiles')
@@ -197,69 +192,28 @@ export default function AdminPage() {
     loadData()
   }, [userProfile, supabase, refreshSalesKey])
 
-  // 3. Fetch active branches for this store and resolve the selected branch
+  // Realtime subscription for sales in this branch
   useEffect(() => {
-    if (!userProfile?.store_id) return
+    if (!userProfile?.store_id || !userProfile?.branch_id) return
 
-    async function loadBranches() {
-      try {
-        const { data, error } = await supabase
-          .from('branches')
-          .select('id, name')
-          .eq('is_active', true)
-          .order('name', { ascending: true })
-
-        if (error) throw error
-        const activeBranches = (data as Branch[]) || []
-        setBranches(activeBranches)
-
-        const storageKey = `erp:selectedBranchId:${userProfile!.store_id}`
-        const stored = typeof window !== 'undefined' ? window.localStorage.getItem(storageKey) : null
-        const storedIsValid = stored && activeBranches.some(b => b.id === stored)
-        const nextSelected = storedIsValid ? stored : (activeBranches[0]?.id ?? null)
-
-        setSelectedBranchId(nextSelected)
-        if (typeof window !== 'undefined' && nextSelected) {
-          window.localStorage.setItem(storageKey, nextSelected)
-        }
-      } catch (err) {
-        console.error('Error fetching branches:', err)
-      }
-    }
-
-    loadBranches()
-  }, [userProfile, supabase, refreshBranchesKey])
-
-  // Persist branch selection changes made directly from the header selector
-  const handleSelectBranch = (branchId: string) => {
-    setSelectedBranchId(branchId)
-    if (typeof window !== 'undefined' && userProfile?.store_id) {
-      window.localStorage.setItem(`erp:selectedBranchId:${userProfile.store_id}`, branchId)
-    }
-  }
-
-  // Realtime subscription for sales INSERT events
-  useEffect(() => {
-    if (!userProfile?.store_id) return
-
-    const storeId = userProfile.store_id
+    const branchId = userProfile.branch_id
+    console.log(`Setting up realtime subscription for branch ${branchId}...`)
 
     const channel = supabase
-      .channel(`realtime-sales-${storeId}`)
+      .channel(`realtime:sales:branch:${branchId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'sales',
-          filter: `store_id=eq.${storeId}`,
+          filter: `branch_id=eq.${branchId}`,
         },
         async (payload) => {
           const newRecord = payload.new as Partial<Sale>
           if (!newRecord || !newRecord.id) return
 
           try {
-            // Fix N+1: look up employee from state or fallback
             setSales(prev => {
               if (prev.some(s => s.id === newRecord.id)) return prev
               const formattedSale: Sale = {
@@ -269,6 +223,7 @@ export default function AdminPage() {
                 payment_method: (newRecord.payment_method as 'cash' | 'transfer' | 'card') || 'cash',
                 total_amount: Number(newRecord.total_amount || 0),
                 employee_id: newRecord.employee_id || '',
+                branch_id: newRecord.branch_id || branchId,
                 profiles: null
               }
               return [formattedSale, ...prev]
@@ -288,10 +243,10 @@ export default function AdminPage() {
       })
 
     return () => {
-      console.log(`Cleaning up realtime subscription for store ${storeId}...`)
+      console.log(`Cleaning up realtime subscription for branch ${branchId}...`)
       supabase.removeChannel(channel)
     }
-  }, [userProfile?.store_id, supabase])
+  }, [userProfile?.store_id, userProfile?.branch_id, supabase])
 
   // Compute metrics in local timezone
   const localTodayStats = () => {
@@ -348,7 +303,7 @@ export default function AdminPage() {
             highlightedSaleIds={highlightedSaleIds}
             employees={employeesList}
             storeId={userProfile?.store_id || null}
-            branchId={selectedBranchId}
+            branchId={userProfile?.branch_id || null}
             storeName={storeInfo?.name || 'Mi Tienda'}
             paperWidth={paperWidth}
             onSalesChange={triggerRefreshSales}
@@ -361,7 +316,7 @@ export default function AdminPage() {
             loading={dataLoading}
             employees={employeesList}
             storeId={userProfile?.store_id || null}
-            branchId={selectedBranchId}
+            branchId={userProfile?.branch_id || null}
             storeName={storeInfo?.name || 'Mi Tienda'}
             onSalesChange={triggerRefreshSales}
           />
@@ -375,33 +330,16 @@ export default function AdminPage() {
           <StaffManagementView
             storeId={userProfile?.store_id || null}
             currentUserId={userProfile?.id}
-            callerRole="admin"
+            callerRole="encargado"
+            callerBranchId={userProfile?.branch_id || null}
           />
         )
       case 'stock':
         return (
           <StockView
             storeId={userProfile?.store_id || null}
-            branchId={selectedBranchId}
-            branchName={branches.find((b) => b.id === selectedBranchId)?.name}
-          />
-        )
-      case 'branches':
-        return (
-          <BranchManager
-            storeId={userProfile?.store_id || null}
-            onBranchesChange={triggerRefreshBranches}
-          />
-        )
-      case 'settings':
-        return (
-          <StoreSettingsView
-            storeId={userProfile?.store_id || null}
-            currentPaperWidth={paperWidth}
-            onPaperWidthChange={(w) => {
-              setPaperWidth(w)
-              setStoreInfo(prev => prev ? { ...prev, thermal_paper_width: w } : prev)
-            }}
+            branchId={userProfile?.branch_id || null}
+            branchName={branchName}
           />
         )
       default:
@@ -455,12 +393,12 @@ export default function AdminPage() {
     <div className="flex min-h-screen bg-zinc-50 dark:bg-zinc-950 font-sans text-zinc-900 dark:text-zinc-50 antialiased transition-all duration-300">
       
       {/* 1. SIDEBAR Navigation */}
-      <AdminSidebar
+      <EncargadoSidebar
         currentSection={activeSection}
         setSection={setActiveSection}
         storeName={storeInfo?.name || 'Cargando tienda...'}
-        adminName={userProfile?.name || 'Administrador'}
-        adminEmail={userProfile?.email || 'admin@tienda.com'}
+        adminName={userProfile?.name || 'Encargado'}
+        adminEmail={userProfile?.email || 'encargado@tienda.com'}
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}
         onLogout={handleLogout}
@@ -490,34 +428,20 @@ export default function AdminPage() {
               </h2>
             </div>
 
-            {/* Branch Selector — always exactly one active branch selected, no "all branches" option */}
-            {branches.length > 0 && (
-              <Select
-                value={selectedBranchId ?? ''}
-                onValueChange={(v) => handleSelectBranch(v as string)}
-              >
-                <SelectTrigger size="sm" className="h-8 gap-1.5 rounded-lg border-zinc-200 dark:border-zinc-800 text-xs font-semibold">
-                  <Store className="h-3.5 w-3.5 text-zinc-400" />
-                  <SelectValue placeholder="Sucursal...">
-                    {(value: string | null) => branches.find((b) => b.id === value)?.name ?? 'Sucursal...'}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {branches.map((branch) => (
-                    <SelectItem key={branch.id} value={branch.id}>
-                      {branch.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            {/* Branch Badge for Encargado (locked to own branch) */}
+            {branchName && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+                <MapPin className="h-3.5 w-3.5 text-zinc-500" />
+                <span>{branchName}</span>
+              </div>
             )}
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Admin Badge */}
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 border border-zinc-800 dark:border-zinc-200 shadow-2xs">
+            {/* Encargado Badge */}
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-600 text-white dark:bg-indigo-500 dark:text-white border border-indigo-700 dark:border-indigo-400 shadow-2xs">
               <ShieldCheck className="h-3.5 w-3.5" />
-              Administrador
+              Encargado
             </div>
             
             {/* Logout button */}

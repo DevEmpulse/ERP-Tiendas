@@ -2,12 +2,21 @@
 
 import { UserManager } from '@/components/admin/UserManager'
 import { Users } from 'lucide-react'
+import type { Role } from '@/lib/roles'
 
 interface StaffManagementViewProps {
   storeId: string | null
+  currentUserId?: string | null
+  callerRole?: Role | string | null
+  callerBranchId?: string | null
 }
 
-export function StaffManagementView({ storeId }: StaffManagementViewProps) {
+export function StaffManagementView({
+  storeId,
+  currentUserId,
+  callerRole = 'admin',
+  callerBranchId = null,
+}: StaffManagementViewProps) {
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Title Header */}
@@ -17,14 +26,18 @@ export function StaffManagementView({ storeId }: StaffManagementViewProps) {
           Gestión de Personal
         </h1>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          Revisa el equipo actual del local e invita a nuevas empleado/as a través de su cuenta Gmail.
+          Revisa el equipo actual del local e invita a nuevos colaboradores a través de su cuenta Gmail.
         </p>
       </div>
 
       {/* Main User management component */}
       <UserManager
         storeId={storeId}
+        currentUserId={currentUserId}
+        callerRole={callerRole}
+        callerBranchId={callerBranchId}
       />
     </div>
   )
 }
+

@@ -1067,3 +1067,596 @@ GRANT EXECUTE ON FUNCTION public.adjust_branch_stock(uuid, uuid, int, text, text
 -- branch_id column before the tables that read it, both tables before the constraints
 -- they reference.
 
+
+-- ==============================================================================
+-- 16. GRANULAR ROLES (admin | encargado | caja | stock | employee | superadmin)
+-- ==============================================================================
+
+-- 16.1 Role ladder (FIRST — nothing else may reference the new values before this)
+ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_role_check;
+ALTER TABLE public.profiles ADD CONSTRAINT profiles_role_check
+  CHECK (role IN ('admin','encargado','caja','stock','employee','superadmin'));
+
+
+-- 16.2 Employee RPCs — assignment matrix
+CREATE OR REPLACE FUNCTION public.preload_employee(
+  p_email text, p_name text, p_role text, p_store_id uuid, p_branch_id uuid
+)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth
+AS $$
+DECLARE
+  v_dummy_id      uuid;
+  v_caller_role   text;
+  v_caller_branch uuid;
+BEGIN
+  SELECT role, branch_id INTO v_caller_role, v_caller_branch
+  FROM public.profiles WHERE id = auth.uid() AND store_id = p_store_id;
+
+  IF v_caller_role IS NULL THEN
+    RAISE EXCEPTION 'Unauthorized: caller does not belong to this store';
+  END IF;
+
+  -- Assignment matrix. 'employee' is deliberately ABSENT from both lists: it stays a
+  -- valid stored value (16.1) but is never assignable to a new invite.
+  IF v_caller_role = 'admin' THEN
+    IF p_role NOT IN ('admin','encargado','caja','stock') THEN
+      RAISE EXCEPTION 'Invalid role: must be admin, encargado, caja or stock';
+    END IF;
+  ELSIF v_caller_role = 'encargado' THEN
+    IF p_role NOT IN ('caja','stock') THEN
+      RAISE EXCEPTION 'Unauthorized: encargados can only invite caja or stock';
+    END IF;
+    IF p_branch_id IS DISTINCT FROM v_caller_branch THEN
+      RAISE EXCEPTION 'Unauthorized: encargados can only invite into their own branch';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'Unauthorized: only admins and encargados can preload employees';
+  END IF;
+
+  -- Branch-scoped role list. Mirrors profiles_employee_branch_check (16.7) and
+  -- update_employee_user below; all three must change together.
+  IF p_role IN ('encargado','caja','stock','employee') AND p_branch_id IS NULL THEN
+    RAISE EXCEPTION 'Branch is required for branch-scoped profiles';
+  END IF;
+
+  IF p_branch_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.branches WHERE id = p_branch_id AND store_id = p_store_id
+  ) THEN
+    RAISE EXCEPTION 'Invalid branch for this store';
+  END IF;
+
+  v_dummy_id := gen_random_uuid();
+
+  INSERT INTO auth.users (id, email, raw_app_meta_data, raw_user_meta_data, aud, role)
+  VALUES (v_dummy_id, null, '{"provider":"email"}'::jsonb, '{}'::jsonb,
+          'authenticated', 'authenticated');
+
+  INSERT INTO public.profiles (id, store_id, email, name, role, branch_id)
+  VALUES (v_dummy_id, p_store_id, p_email, p_name, p_role,
+          CASE WHEN p_role IN ('encargado','caja','stock','employee')
+               THEN p_branch_id ELSE NULL END);
+
+  RETURN v_dummy_id;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.update_employee_user(uuid, text, text, uuid);
+CREATE FUNCTION public.update_employee_user(
+  p_employee_id uuid, p_name text, p_email text, p_branch_id uuid,
+  p_role text DEFAULT NULL
+)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth
+AS $$
+DECLARE
+  v_store_id      uuid;
+  v_target_role   text;
+  v_target_branch uuid;
+  v_new_role      text;
+  v_caller_role   text;
+  v_caller_branch uuid;
+BEGIN
+  SELECT store_id, role, branch_id INTO v_store_id, v_target_role, v_target_branch
+  FROM public.profiles WHERE id = p_employee_id;
+  IF v_store_id IS NULL THEN RAISE EXCEPTION 'Profile not found'; END IF;
+
+  v_new_role := COALESCE(p_role, v_target_role);
+
+  SELECT role, branch_id INTO v_caller_role, v_caller_branch
+  FROM public.profiles WHERE id = auth.uid() AND store_id = v_store_id;
+
+  IF v_caller_role IS NULL THEN
+    RAISE EXCEPTION 'Unauthorized: caller does not belong to this store';
+  END IF;
+
+  -- Nobody changes their own role here: prevents a sole admin self-demoting the
+  -- store into a locked-out state (mirrors delete_employee_user's self-guard, :339).
+  IF p_employee_id = auth.uid() AND v_new_role IS DISTINCT FROM v_caller_role THEN
+    RAISE EXCEPTION 'Cannot change your own role';
+  END IF;
+
+  -- An Admin's role can NEVER be changed or demoted by any role
+  IF v_target_role = 'admin' AND v_new_role <> 'admin' THEN
+    RAISE EXCEPTION 'Cannot change or demote the role of an administrator';
+  END IF;
+
+  IF v_caller_role = 'admin' THEN
+    IF v_new_role NOT IN ('admin','encargado','caja','stock','employee') THEN
+      RAISE EXCEPTION 'Invalid role for this store';
+    END IF;
+  ELSIF v_caller_role = 'encargado' THEN
+    IF v_target_role NOT IN ('caja','stock','employee')
+       OR v_target_branch IS DISTINCT FROM v_caller_branch THEN
+      RAISE EXCEPTION 'Unauthorized: encargados can only edit caja/stock in their branch';
+    END IF;
+    IF v_new_role NOT IN ('caja','stock') THEN
+      RAISE EXCEPTION 'Unauthorized: encargados can only assign caja or stock';
+    END IF;
+    IF p_branch_id IS DISTINCT FROM v_caller_branch THEN
+      RAISE EXCEPTION 'Unauthorized: encargados cannot move a profile to another branch';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'Unauthorized: only admins and encargados can edit employees';
+  END IF;
+
+  IF v_new_role IN ('encargado','caja','stock','employee') AND p_branch_id IS NULL THEN
+    RAISE EXCEPTION 'Branch is required for branch-scoped profiles';
+  END IF;
+
+  IF p_branch_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.branches WHERE id = p_branch_id AND store_id = v_store_id
+  ) THEN
+    RAISE EXCEPTION 'Invalid branch for this store';
+  END IF;
+
+  UPDATE public.profiles
+  SET name = p_name,
+      email = p_email,
+      role  = v_new_role,
+      branch_id = CASE WHEN v_new_role IN ('encargado','caja','stock','employee')
+                       THEN p_branch_id ELSE NULL END
+  WHERE id = p_employee_id;
+
+  UPDATE auth.users SET email = p_email
+  WHERE id = p_employee_id AND email IS NOT NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_employee_user(p_employee_id uuid)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth
+AS $$
+DECLARE
+  v_store_id      uuid;
+  v_target_role   text;
+  v_target_branch uuid;
+  v_caller_role   text;
+  v_caller_branch uuid;
+BEGIN
+  -- Get the store_id, role, and branch_id of the employee being deleted
+  SELECT store_id, role, branch_id INTO v_store_id, v_target_role, v_target_branch
+  FROM public.profiles
+  WHERE id = p_employee_id;
+
+  IF v_store_id IS NULL THEN
+    RAISE EXCEPTION 'Profile not found';
+  END IF;
+
+  SELECT role, branch_id INTO v_caller_role, v_caller_branch
+  FROM public.profiles WHERE id = auth.uid() AND store_id = v_store_id;
+
+  IF v_caller_role = 'admin' THEN
+    NULL;                                    -- any branch in own store
+  ELSIF v_caller_role = 'encargado' THEN
+    IF v_target_role NOT IN ('caja','stock','employee')
+       OR v_target_branch IS DISTINCT FROM v_caller_branch THEN
+      RAISE EXCEPTION 'Unauthorized: encargados can only remove caja/stock in their branch';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'Unauthorized: only admins and encargados can delete employees';
+  END IF;
+
+  -- Prevent deleting yourself
+  IF p_employee_id = auth.uid() THEN
+    RAISE EXCEPTION 'Cannot delete your own user profile';
+  END IF;
+
+  -- Detach sales from this employee (preserve history, nullify reference)
+  UPDATE public.sales
+  SET employee_id = NULL
+  WHERE employee_id = p_employee_id;
+
+  -- Delete from auth.users (which cascades to public.profiles)
+  DELETE FROM auth.users
+  WHERE id = p_employee_id;
+END;
+$$;
+
+
+-- 16.3 adjust_branch_stock — minimal widening
+CREATE OR REPLACE FUNCTION public.adjust_branch_stock(
+  p_branch_id  uuid,
+  p_product_id uuid,
+  p_delta      int,
+  p_reason     text DEFAULT 'manual_adjustment',
+  p_note       text DEFAULT NULL
+)
+RETURNS int
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public
+AS $$
+DECLARE v_store_id uuid; v_branch_store uuid; v_before int; v_after int;
+BEGIN
+  IF public.get_current_user_role()
+     NOT IN ('admin','superadmin','encargado','stock') THEN
+    RAISE EXCEPTION 'Only admins, encargados and stock staff can adjust stock';
+  END IF;
+
+  -- Branch ownership, mirroring the p_branch_id/store coherence check already below.
+  IF public.get_current_user_role() NOT IN ('admin','superadmin')
+     AND p_branch_id IS DISTINCT FROM public.get_current_user_branch_id() THEN
+    RAISE EXCEPTION 'Cannot adjust stock for another branch';
+  END IF;
+
+  IF p_delta = 0 THEN RAISE EXCEPTION 'Adjustment delta must not be zero'; END IF;
+  IF p_reason NOT IN ('manual_adjustment', 'restock', 'import_ingress') THEN
+    RAISE EXCEPTION 'Invalid adjustment reason: %', p_reason;
+  END IF;
+
+  -- Both reads run under RLS (SECURITY INVOKER), so a cross-tenant id simply finds
+  -- nothing and surfaces as "not found" rather than leaking its existence.
+  SELECT p.store_id INTO v_store_id  FROM public.products p WHERE p.id = p_product_id;
+  IF v_store_id IS NULL THEN RAISE EXCEPTION 'Product not found'; END IF;
+
+  SELECT b.store_id INTO v_branch_store FROM public.branches b WHERE b.id = p_branch_id;
+  IF v_branch_store IS NULL OR v_branch_store <> v_store_id THEN
+    RAISE EXCEPTION 'Branch does not belong to this product''s store';
+  END IF;
+
+  INSERT INTO public.branch_stock (store_id, branch_id, product_id, current_stock)
+  VALUES (v_store_id, p_branch_id, p_product_id, 0)
+  ON CONFLICT (branch_id, product_id) DO UPDATE SET updated_at = now()
+  RETURNING current_stock INTO v_before;
+
+  UPDATE public.branch_stock
+     SET current_stock = GREATEST(v_before + p_delta, 0), updated_at = now()
+   WHERE branch_id = p_branch_id AND product_id = p_product_id
+  RETURNING current_stock INTO v_after;
+
+  INSERT INTO public.stock_movements
+    (store_id, branch_id, product_id, reason,
+     quantity_delta, applied_delta, resulting_balance, note)
+  VALUES
+    (v_store_id, p_branch_id, p_product_id, p_reason,
+     p_delta, v_after - v_before, v_after, p_note);
+
+  RETURN v_after;
+END;
+$$;
+
+
+-- 16.4 Shape C — store-wide read, role-gated write
+DROP POLICY IF EXISTS "Users can manage categories in their store" ON public.categories;
+
+CREATE POLICY "Users can read categories in their store" ON public.categories
+  FOR SELECT TO authenticated
+  USING (store_id = public.get_current_user_store_id());
+
+CREATE POLICY "Catalog managers can write categories in their store" ON public.categories
+  FOR ALL TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  );
+
+DROP POLICY IF EXISTS "Users can manage products in their store" ON public.products;
+
+CREATE POLICY "Users can read products in their store" ON public.products
+  FOR SELECT TO authenticated
+  USING (store_id = public.get_current_user_store_id());
+
+CREATE POLICY "Catalog managers can write products in their store" ON public.products
+  FOR ALL TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  );
+
+DROP POLICY IF EXISTS "Users can manage price rules in their store" ON public.product_price_rules;
+
+CREATE POLICY "Users can read price rules in their store" ON public.product_price_rules
+  FOR SELECT TO authenticated
+  USING (store_id = public.get_current_user_store_id());
+
+CREATE POLICY "Catalog managers can write price rules in their store" ON public.product_price_rules
+  FOR ALL TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  );
+
+-- clients: read policy at :86-89 stays; only the FOR ALL is replaced.
+DROP POLICY IF EXISTS "Users can manage clients in the same store" ON public.clients;
+
+CREATE POLICY "Client managers can write clients in their store" ON public.clients
+  FOR ALL TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('admin','superadmin','encargado')
+  );
+
+-- Resolved fork #1: caja may add a client mid-sale, never edit or delete one.
+CREATE POLICY "Caja can add clients in their store" ON public.clients
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND public.get_current_user_role() IN ('caja','employee')
+  );
+
+
+-- 16.5 Shape D — branch-scoped, verb-split
+DROP POLICY IF EXISTS "Users can view sales in the same store"   ON public.sales;
+DROP POLICY IF EXISTS "Users can manage sales in the same store" ON public.sales;
+
+CREATE POLICY "Users can read sales in their scope" ON public.sales
+  FOR SELECT TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+CREATE POLICY "Sellers can create sales in their scope" ON public.sales
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (
+        public.get_current_user_role() IN ('encargado','caja','employee')
+        AND branch_id = public.get_current_user_branch_id()
+      )
+    )
+  );
+
+CREATE POLICY "Sellers can update sales in their scope" ON public.sales
+  FOR UPDATE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND employee_id = (select auth.uid()))
+    )
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND employee_id = (select auth.uid()))
+    )
+  );
+
+CREATE POLICY "Sellers can delete sales in their scope" ON public.sales
+  FOR DELETE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND employee_id = (select auth.uid()))
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can manage sale items in their store" ON public.sale_items;
+
+CREATE POLICY "Users can read sale items in their scope" ON public.sale_items
+  FOR SELECT TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+CREATE POLICY "Sellers can create sale items in their scope" ON public.sale_items
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (
+        public.get_current_user_role() IN ('encargado','caja','employee')
+        AND branch_id = public.get_current_user_branch_id()
+      )
+    )
+  );
+
+CREATE POLICY "Sellers can update sale items in their scope" ON public.sale_items
+  FOR UPDATE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND EXISTS (SELECT 1 FROM public.sales s
+                       WHERE s.id = sale_items.sale_id
+                         AND s.employee_id = (select auth.uid())))
+    )
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND EXISTS (SELECT 1 FROM public.sales s
+                       WHERE s.id = sale_items.sale_id
+                         AND s.employee_id = (select auth.uid())))
+    )
+  );
+
+CREATE POLICY "Sellers can delete sale items in their scope" ON public.sale_items
+  FOR DELETE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND EXISTS (SELECT 1 FROM public.sales s
+                       WHERE s.id = sale_items.sale_id
+                         AND s.employee_id = (select auth.uid())))
+    )
+  );
+
+
+-- 16.6 profiles privilege-escalation fix
+DROP POLICY IF EXISTS "Admins can manage profiles in the same store" ON public.profiles;
+CREATE POLICY "Admins and encargados can manage profiles in their scope" ON public.profiles
+  FOR ALL TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() = 'admin'
+      OR (
+        public.get_current_user_role() = 'encargado'
+        AND branch_id = public.get_current_user_branch_id()
+        AND role IN ('caja','stock','employee')
+      )
+    )
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND CASE public.get_current_user_role()
+          WHEN 'admin'     THEN role IN ('admin','encargado','caja','stock','employee')
+          WHEN 'encargado' THEN role IN ('caja','stock','employee')
+                            AND branch_id = public.get_current_user_branch_id()
+          ELSE false
+        END
+  );
+
+
+-- 16.7 Generalized branch CHECK — LAST
+ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_employee_branch_check;
+ALTER TABLE public.profiles ADD CONSTRAINT profiles_employee_branch_check
+  CHECK (
+    CASE
+      WHEN role IN ('encargado','caja','stock','employee') THEN branch_id IS NOT NULL
+      WHEN role IN ('admin','superadmin')                  THEN branch_id IS NULL
+      ELSE true
+    END
+  );
+
+
+-- 16.8 ROLLBACK (do not run automatically) — reverse of section 16, bottom to top:
+-- ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_employee_branch_check;
+-- ALTER TABLE public.profiles ADD CONSTRAINT profiles_employee_branch_check
+--   CHECK (role <> 'employee' OR branch_id IS NOT NULL);
+--
+-- DROP POLICY IF EXISTS "Admins and encargados can manage profiles in their scope" ON public.profiles;
+-- CREATE POLICY "Admins can manage profiles in the same store" ON public.profiles
+--   FOR ALL TO authenticated
+--   USING (
+--     store_id = public.get_current_user_store_id()
+--     AND (public.get_current_user_role() = 'admin' OR id = auth.uid())
+--   )
+--   WITH CHECK (
+--     store_id = public.get_current_user_store_id()
+--     AND (public.get_current_user_role() = 'admin' OR id = auth.uid())
+--   );
+--
+-- DROP POLICY IF EXISTS "Users can read sale items in their scope" ON public.sale_items;
+-- DROP POLICY IF EXISTS "Sellers can create sale items in their scope" ON public.sale_items;
+-- DROP POLICY IF EXISTS "Sellers can update sale items in their scope" ON public.sale_items;
+-- DROP POLICY IF EXISTS "Sellers can delete sale items in their scope" ON public.sale_items;
+-- CREATE POLICY "Users can manage sale items in their store" ON public.sale_items
+--   FOR ALL TO authenticated
+--   USING (store_id = public.get_current_user_store_id());
+--
+-- DROP POLICY IF EXISTS "Users can read sales in their scope" ON public.sales;
+-- DROP POLICY IF EXISTS "Sellers can create sales in their scope" ON public.sales;
+-- DROP POLICY IF EXISTS "Sellers can update sales in their scope" ON public.sales;
+-- DROP POLICY IF EXISTS "Sellers can delete sales in their scope" ON public.sales;
+-- CREATE POLICY "Users can view sales in the same store" ON public.sales
+--   FOR SELECT TO authenticated
+--   USING (store_id = public.get_current_user_store_id());
+-- CREATE POLICY "Users can manage sales in the same store" ON public.sales
+--   FOR ALL TO authenticated
+--   USING (store_id = public.get_current_user_store_id());
+--
+-- DROP POLICY IF EXISTS "Client managers can write clients in their store" ON public.clients;
+-- DROP POLICY IF EXISTS "Caja can add clients in their store" ON public.clients;
+-- CREATE POLICY "Users can manage clients in the same store" ON public.clients
+--   FOR ALL TO authenticated
+--   USING (store_id = public.get_current_user_store_id());
+--
+-- DROP POLICY IF EXISTS "Users can read price rules in their store" ON public.product_price_rules;
+-- DROP POLICY IF EXISTS "Catalog managers can write price rules in their store" ON public.product_price_rules;
+-- CREATE POLICY "Users can manage price rules in their store" ON public.product_price_rules
+--   FOR ALL TO authenticated
+--   USING (store_id = public.get_current_user_store_id());
+--
+-- DROP POLICY IF EXISTS "Users can read products in their store" ON public.products;
+-- DROP POLICY IF EXISTS "Catalog managers can write products in their store" ON public.products;
+-- CREATE POLICY "Users can manage products in their store" ON public.products
+--   FOR ALL TO authenticated
+--   USING (store_id = public.get_current_user_store_id());
+--
+-- DROP POLICY IF EXISTS "Users can read categories in their store" ON public.categories;
+-- DROP POLICY IF EXISTS "Catalog managers can write categories in their store" ON public.categories;
+-- CREATE POLICY "Users can manage categories in their store" ON public.categories
+--   FOR ALL TO authenticated
+--   USING (store_id = public.get_current_user_store_id());
+--
+-- (adjust_branch_stock rollback: restore 15.9 definition with 'admin', 'superadmin' check)
+-- (delete_employee_user rollback: restore 9 definition)
+-- (update_employee_user rollback: DROP 5-arg form; restore 14.7 4-arg definition)
+-- (preload_employee rollback: restore 14.6 definition)
+--
+-- DO $$ BEGIN
+--   IF EXISTS (SELECT 1 FROM public.profiles WHERE role IN ('encargado','caja','stock')) THEN
+--     RAISE EXCEPTION 'Reassign encargado/caja/stock profiles before rolling back';
+--   END IF;
+-- END $$;
+-- ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_role_check;
+-- ALTER TABLE public.profiles ADD CONSTRAINT profiles_role_check
+--   CHECK (role IN ('admin','employee','superadmin'));
+
+

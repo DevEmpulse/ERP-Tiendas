@@ -1,9 +1,10 @@
 'use client'
 
-import { LayoutDashboard, Calendar, TrendingUp, Users, LogOut, Store, X, Contact, Tags, Settings, Building2 } from 'lucide-react'
+import { LogOut, Store, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { AdminSection, SidebarItem, ADMIN_MENU_ITEMS } from './sidebar-items'
 
-export type AdminSection = 'dashboard' | 'history' | 'employees' | 'staff' | 'clients' | 'stock' | 'branches' | 'settings'
+export type { AdminSection, SidebarItem }
 
 interface AdminSidebarProps {
   currentSection: AdminSection
@@ -14,6 +15,8 @@ interface AdminSidebarProps {
   isOpen: boolean // For mobile drawer state
   setIsOpen: (isOpen: boolean) => void
   onLogout: () => void
+  items?: SidebarItem[]
+  portalLabel?: string
 }
 
 export function AdminSidebar({
@@ -25,57 +28,10 @@ export function AdminSidebar({
   isOpen,
   setIsOpen,
   onLogout,
+  items = ADMIN_MENU_ITEMS,
+  portalLabel = 'Admin Portal',
 }: AdminSidebarProps) {
-  const menuItems = [
-    {
-      id: 'dashboard' as AdminSection,
-      label: 'Dashboard',
-      icon: LayoutDashboard,
-      description: 'Métricas y ventas de hoy',
-    },
-    {
-      id: 'history' as AdminSection,
-      label: 'Historial de Ventas',
-      icon: Calendar,
-      description: 'Filtrar por fechas y acumulados',
-    },
-    {
-      id: 'employees' as AdminSection,
-      label: 'Rendimiento',
-      icon: TrendingUp,
-      description: 'Análisis de ventas por empleado/a',
-    },
-    {
-      id: 'clients' as AdminSection,
-      label: 'Clientes',
-      icon: Contact,
-      description: 'Gestión de clientes y contactos',
-    },
-    {
-      id: 'staff' as AdminSection,
-      label: 'Gestión de Personal',
-      icon: Users,
-      description: 'Administración e invitaciones',
-    },
-    {
-      id: 'stock' as AdminSection,
-      label: 'Stock / Precios',
-      icon: Tags,
-      description: 'Reglas de precio por cantidad',
-    },
-    {
-      id: 'branches' as AdminSection,
-      label: 'Sucursales',
-      icon: Building2,
-      description: 'Crear, renombrar y desactivar sucursales',
-    },
-    {
-      id: 'settings' as AdminSection,
-      label: 'Configuración',
-      icon: Settings,
-      description: 'Ajustes de la tienda',
-    },
-  ]
+  const menuItems = items
 
   const getInitials = (name: string) => {
     return name
@@ -100,7 +56,7 @@ export function AdminSidebar({
               {storeName || 'Cargando tienda...'}
             </h1>
             <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold tracking-wider uppercase">
-              Admin Portal
+              {portalLabel}
             </p>
           </div>
         </div>

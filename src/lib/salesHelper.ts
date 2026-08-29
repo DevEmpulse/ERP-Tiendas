@@ -225,3 +225,13 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
 
   return grouped
 }
+
+export async function deleteSaleGroup(
+  supabase: any,
+  ids: string[]
+): Promise<{ error: { message: string } | null }> {
+  if (!ids || ids.length === 0) return { error: null }
+  const { error } = await supabase.from('sales').delete().in('id', ids)
+  return { error }
+}
+

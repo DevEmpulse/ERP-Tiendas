@@ -17,10 +17,11 @@ import {
   Coins, ArrowLeftRight, CreditCard, Phone, Loader2,
   ShieldAlert, CheckCircle2, Plus, Trash2, Package, User, Tags
 } from 'lucide-react'
-import { GroupedSale } from '@/lib/salesHelper'
+import { GroupedSale, deleteSaleGroup } from '@/lib/salesHelper'
 import { cn } from '@/lib/utils'
 import { useToast, Toaster } from '@/components/ui/toast'
 import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
+import { CATALOG_WRITE_ROLES } from '@/lib/roles'
 
 interface PriceRule {
   id: string
@@ -36,6 +37,7 @@ interface SaleModalProps {
   onOpenChange: (open: boolean) => void
   storeId: string | null
   branchId?: string | null
+  callerRole?: string | null
   employees: Array<{ id: string; name: string | null; email?: string | null; role?: string | null }>
   saleToEdit?: GroupedSale | null
   onSuccess: () => void
@@ -107,6 +109,7 @@ export function SaleModal({
   onOpenChange,
   storeId,
   branchId = null,
+  callerRole = null,
   employees,
   saleToEdit,
   onSuccess,
@@ -330,8 +333,8 @@ export function SaleModal({
 
           if (existingClient) {
             clientId = existingClient.id
-            // Update name if provided and different
-            if (trimmedName && trimmedName !== existingClient.name) {
+            // Update name if provided and different (only if role has catalog write permissions)
+            if (trimmedName && trimmedName !== existingClient.name && (!callerRole || (CATALOG_WRITE_ROLES as readonly string[]).includes(callerRole))) {
               await supabase.from('clients').update({ name: trimmedName }).eq('id', clientId)
             }
           } else {
@@ -348,7 +351,7 @@ export function SaleModal({
       if (isEditMode && saleToEdit) {
         const ids = saleToEdit.payments.map(p => p.id)
         if (ids.length > 0) {
-          const { error: deleteError } = await supabase.from('sales').delete().in('id', ids)
+          const { error: deleteError } = await deleteSaleGroup(supabase, ids)
           if (deleteError) throw deleteError
         }
       }

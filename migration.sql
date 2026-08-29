@@ -732,3 +732,338 @@ ALTER TABLE public.profiles ADD CONSTRAINT profiles_employee_branch_check
 -- ALTER TABLE public.profiles DROP COLUMN IF EXISTS branch_id;
 -- DROP TABLE    IF EXISTS public.branches CASCADE;
 
+-- 15. Branch stock, movement ledger, product codes (Stock Phase 2)
+
+-- 15.1 Coherence keys: make (store_id, id) referenceable so branch/product can never
+--      be paired with a foreign store. Additive, no data change.
+ALTER TABLE public.branches DROP CONSTRAINT IF EXISTS branches_store_id_id_key;
+ALTER TABLE public.branches ADD  CONSTRAINT branches_store_id_id_key UNIQUE (store_id, id);
+ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_store_id_id_key;
+ALTER TABLE public.products ADD  CONSTRAINT products_store_id_id_key UNIQUE (store_id, id);
+
+-- 15.2 Global product code sequence + EAN-8 generator
+CREATE SEQUENCE IF NOT EXISTS public.product_code_seq
+  AS bigint START WITH 1 INCREMENT BY 1 MINVALUE 1 MAXVALUE 9999999 NO CYCLE;
+
+CREATE OR REPLACE FUNCTION public.ean8_check_digit(p_payload text)
+RETURNS int
+LANGUAGE plpgsql IMMUTABLE STRICT
+SET search_path = public
+AS $$
+DECLARE v_sum int := 0; i int;
+BEGIN
+  IF p_payload !~ '^[0-9]{7}$' THEN
+    RAISE EXCEPTION 'EAN-8 payload must be exactly 7 digits, got %', p_payload;
+  END IF;
+  -- Odd positions (1,3,5,7) weigh 3; even positions (2,4,6) weigh 1. Mirror of EAN-13.
+  FOR i IN 1..7 LOOP
+    v_sum := v_sum + substr(p_payload, i, 1)::int * CASE WHEN i % 2 = 1 THEN 3 ELSE 1 END;
+  END LOOP;
+  RETURN (10 - (v_sum % 10)) % 10;   -- outer mod: a sum ending in 0 yields 0, not 10
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.next_product_code()
+RETURNS text
+LANGUAGE plpgsql VOLATILE
+SET search_path = public
+AS $$
+DECLARE v_payload text;
+BEGIN
+  v_payload := lpad(nextval('public.product_code_seq')::text, 7, '0');
+  RETURN v_payload || public.ean8_check_digit(v_payload)::text;
+END;
+$$;
+
+-- 15.3 products.barcode: optional free text -> mandatory, generated, globally unique.
+--      Column already exists (13.2, `barcode text`) and its Phase 1 index is
+--      products_store_barcode_uidx ON (store_id, barcode) WHERE barcode IS NOT NULL.
+ALTER TABLE public.products ALTER COLUMN barcode SET DEFAULT public.next_product_code();
+
+-- Runs unconditionally. `products` is verified empty, so this is a no-op today; it is
+-- what makes SET NOT NULL safe if that verification is ever wrong. Any surviving Phase 1
+-- free-text value is regenerated: it is not a valid code under the new invariant and
+-- would fail both the format CHECK and, across stores, the global unique index.
+UPDATE public.products
+   SET barcode = public.next_product_code()
+ WHERE barcode IS NULL OR barcode !~ '^[0-9]{8}$';
+
+ALTER TABLE public.products ALTER COLUMN barcode SET NOT NULL;
+
+DROP INDEX IF EXISTS public.products_store_barcode_uidx;
+CREATE UNIQUE INDEX IF NOT EXISTS products_barcode_uidx ON public.products (barcode);
+
+-- Enforces success criterion "the 8th digit validates as a correct EAN-8 check digit"
+-- at the DB layer. Caveat: a CHECK calling a user function requires that function to
+-- exist first on restore, which the ordering in this file guarantees.
+ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_barcode_ean8_check;
+ALTER TABLE public.products ADD  CONSTRAINT products_barcode_ean8_check CHECK (
+  barcode ~ '^[0-9]{8}$'
+  AND substr(barcode, 8, 1)::int = public.ean8_check_digit(substr(barcode, 1, 7))
+);
+
+-- 15.4 Per-branch balances. Composite PK; no surrogate id (see decision).
+CREATE TABLE IF NOT EXISTS public.branch_stock (
+  store_id      uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  branch_id     uuid NOT NULL,
+  product_id    uuid NOT NULL,
+  current_stock int  NOT NULL DEFAULT 0 CHECK (current_stock >= 0),
+  min_stock     int  NOT NULL DEFAULT 0 CHECK (min_stock >= 0),  -- bare column, no behaviour (Phase 7)
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (branch_id, product_id),
+  FOREIGN KEY (store_id, branch_id)  REFERENCES public.branches (store_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (store_id, product_id) REFERENCES public.products (store_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS branch_stock_store_id_idx   ON public.branch_stock (store_id);
+CREATE INDEX IF NOT EXISTS branch_stock_product_id_idx ON public.branch_stock (product_id);
+
+-- 15.5 Append-only ledger. sale_item_id has NO FK on purpose: the AFTER DELETE reversal
+-- is written once the sale_items row is already gone, and CASCADE would erase the very
+-- audit trail this table exists for (Phase 1 precedent: sale_items.product_name).
+CREATE TABLE IF NOT EXISTS public.stock_movements (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id     uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  branch_id    uuid NOT NULL,
+  product_id   uuid NOT NULL,
+  sale_item_id uuid,
+  reason text NOT NULL CHECK (reason IN
+    ('sale', 'sale_reversal', 'manual_adjustment', 'restock', 'import_ingress')),
+  quantity_delta    int NOT NULL CHECK (quantity_delta <> 0),  -- requested (audit)
+  applied_delta     int NOT NULL,                              -- actually applied
+  resulting_balance int NOT NULL CHECK (resulting_balance >= 0),
+  note       text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (store_id, branch_id)  REFERENCES public.branches (store_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (store_id, product_id) REFERENCES public.products (store_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS stock_movements_store_id_idx ON public.stock_movements (store_id);
+CREATE INDEX IF NOT EXISTS stock_movements_branch_product_idx
+  ON public.stock_movements (branch_id, product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS stock_movements_sale_item_id_idx
+  ON public.stock_movements (sale_item_id) WHERE sale_item_id IS NOT NULL;
+
+-- 15.6 RLS — Shape B verbatim (store-branches design.md:317-336)
+ALTER TABLE public.branch_stock    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage branch stock in their branch" ON public.branch_stock;
+CREATE POLICY "Users can manage branch stock in their branch" ON public.branch_stock
+  FOR ALL TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+-- Append-only: the same boolean expression, split across SELECT/INSERT. No UPDATE or
+-- DELETE policy exists, so RLS default-denies both verbs.
+DROP POLICY IF EXISTS "Users can read stock movements in their branch" ON public.stock_movements;
+CREATE POLICY "Users can read stock movements in their branch" ON public.stock_movements
+  FOR SELECT TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can insert stock movements in their branch" ON public.stock_movements;
+CREATE POLICY "Users can insert stock movements in their branch" ON public.stock_movements
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+-- 15.7 sale_items.branch_id — denormalized so the AFTER DELETE reversal survives the
+-- sales cascade (see decision). Nullable: pre-store-branches sales have a NULL branch.
+ALTER TABLE public.sale_items ADD COLUMN IF NOT EXISTS branch_id uuid;
+
+UPDATE public.sale_items si
+   SET branch_id = s.branch_id
+  FROM public.sales s
+ WHERE s.id = si.sale_id AND si.branch_id IS NULL AND s.branch_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION public.set_sale_item_branch()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public
+AS $$
+BEGIN
+  IF NEW.branch_id IS NULL THEN
+    SELECT s.branch_id INTO NEW.branch_id FROM public.sales s WHERE s.id = NEW.sale_id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_sale_item_set_branch ON public.sale_items;
+CREATE TRIGGER on_sale_item_set_branch
+  BEFORE INSERT ON public.sale_items
+  FOR EACH ROW EXECUTE FUNCTION public.set_sale_item_branch();
+
+-- 15.8 Sale line item -> branch stock. One function, both directions.
+CREATE OR REPLACE FUNCTION public.apply_sale_item_stock()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public
+AS $$
+DECLARE
+  v_item public.sale_items%ROWTYPE;
+  v_delta int; v_before int; v_after int; v_prior_applied int;
+BEGIN
+  IF TG_OP = 'INSERT' THEN v_item := NEW; ELSE v_item := OLD; END IF;
+
+  -- Untracked line (no product resolved) or a pre-branch sale: no-op in both directions.
+  IF v_item.product_id IS NULL OR v_item.branch_id IS NULL THEN RETURN NULL; END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    v_delta := -v_item.quantity;
+  ELSE
+    -- Reverse what was APPLIED, not what was requested, so a clamped oversell
+    -- restores the true pre-sale balance instead of inventing units.
+    SELECT m.applied_delta INTO v_prior_applied
+      FROM public.stock_movements m
+     WHERE m.sale_item_id = v_item.id AND m.reason = 'sale'
+     ORDER BY m.created_at DESC LIMIT 1;
+    IF v_prior_applied IS NULL THEN RETURN NULL; END IF;   -- nothing was ever applied
+    v_delta := -v_prior_applied;
+  END IF;
+
+  IF v_delta = 0 THEN RETURN NULL; END IF;  -- fully clamped sale: nothing to reverse
+
+  -- Create-on-demand at zero AND take the row lock in one atomic statement.
+  INSERT INTO public.branch_stock (store_id, branch_id, product_id, current_stock)
+  VALUES (v_item.store_id, v_item.branch_id, v_item.product_id, 0)
+  ON CONFLICT (branch_id, product_id) DO UPDATE SET updated_at = now()
+  RETURNING current_stock INTO v_before;
+
+  UPDATE public.branch_stock
+     SET current_stock = GREATEST(v_before + v_delta, 0), updated_at = now()
+   WHERE branch_id = v_item.branch_id AND product_id = v_item.product_id
+  RETURNING current_stock INTO v_after;
+
+  INSERT INTO public.stock_movements
+    (store_id, branch_id, product_id, sale_item_id, reason,
+     quantity_delta, applied_delta, resulting_balance)
+  VALUES
+    (v_item.store_id, v_item.branch_id, v_item.product_id, v_item.id,
+     CASE WHEN TG_OP = 'INSERT' THEN 'sale' ELSE 'sale_reversal' END,
+     v_delta, v_after - v_before, v_after);
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_sale_item_inserted ON public.sale_items;
+CREATE TRIGGER on_sale_item_inserted
+  AFTER INSERT ON public.sale_items
+  FOR EACH ROW EXECUTE FUNCTION public.apply_sale_item_stock();
+
+DROP TRIGGER IF EXISTS on_sale_item_deleted ON public.sale_items;
+CREATE TRIGGER on_sale_item_deleted
+  AFTER DELETE ON public.sale_items
+  FOR EACH ROW EXECUTE FUNCTION public.apply_sale_item_stock();
+
+-- 15.9 Manual/import adjustment: atomic balance change + ledger entry, admin only.
+DROP FUNCTION IF EXISTS public.adjust_branch_stock(uuid, uuid, int, text, text);
+CREATE FUNCTION public.adjust_branch_stock(
+  p_branch_id  uuid,
+  p_product_id uuid,
+  p_delta      int,
+  p_reason     text DEFAULT 'manual_adjustment',
+  p_note       text DEFAULT NULL
+)
+RETURNS int
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public
+AS $$
+DECLARE v_store_id uuid; v_branch_store uuid; v_before int; v_after int;
+BEGIN
+  IF public.get_current_user_role() NOT IN ('admin', 'superadmin') THEN
+    RAISE EXCEPTION 'Only admins can adjust stock';
+  END IF;
+  IF p_delta = 0 THEN RAISE EXCEPTION 'Adjustment delta must not be zero'; END IF;
+  IF p_reason NOT IN ('manual_adjustment', 'restock', 'import_ingress') THEN
+    RAISE EXCEPTION 'Invalid adjustment reason: %', p_reason;
+  END IF;
+
+  -- Both reads run under RLS (SECURITY INVOKER), so a cross-tenant id simply finds
+  -- nothing and surfaces as "not found" rather than leaking its existence.
+  SELECT p.store_id INTO v_store_id  FROM public.products p WHERE p.id = p_product_id;
+  IF v_store_id IS NULL THEN RAISE EXCEPTION 'Product not found'; END IF;
+
+  SELECT b.store_id INTO v_branch_store FROM public.branches b WHERE b.id = p_branch_id;
+  IF v_branch_store IS NULL OR v_branch_store <> v_store_id THEN
+    RAISE EXCEPTION 'Branch does not belong to this product''s store';
+  END IF;
+
+  INSERT INTO public.branch_stock (store_id, branch_id, product_id, current_stock)
+  VALUES (v_store_id, p_branch_id, p_product_id, 0)
+  ON CONFLICT (branch_id, product_id) DO UPDATE SET updated_at = now()
+  RETURNING current_stock INTO v_before;
+
+  UPDATE public.branch_stock
+     SET current_stock = GREATEST(v_before + p_delta, 0), updated_at = now()
+   WHERE branch_id = p_branch_id AND product_id = p_product_id
+  RETURNING current_stock INTO v_after;
+
+  INSERT INTO public.stock_movements
+    (store_id, branch_id, product_id, reason,
+     quantity_delta, applied_delta, resulting_balance, note)
+  VALUES
+    (v_store_id, p_branch_id, p_product_id, p_reason,
+     p_delta, v_after - v_before, v_after, p_note);
+
+  RETURN v_after;
+END;
+$$;
+
+-- 15.10 Grants. The sequence grant is REQUIRED: the DEFAULT is evaluated as the
+-- inserting (authenticated) role, and nextval() needs USAGE.
+GRANT USAGE  ON SEQUENCE public.product_code_seq TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.branch_stock    TO authenticated;
+GRANT SELECT, INSERT         ON public.stock_movements TO authenticated;
+REVOKE UPDATE, DELETE        ON public.stock_movements FROM authenticated, anon;
+REVOKE DELETE                ON public.branch_stock    FROM authenticated, anon;
+GRANT EXECUTE ON FUNCTION public.adjust_branch_stock(uuid, uuid, int, text, text)
+  TO authenticated;
+
+-- ROLLBACK (do not run automatically) — reverse of section 15, bottom to top:
+-- DROP FUNCTION IF EXISTS public.adjust_branch_stock(uuid, uuid, int, text, text);
+-- DROP TRIGGER  IF EXISTS on_sale_item_deleted    ON public.sale_items;
+-- DROP TRIGGER  IF EXISTS on_sale_item_inserted   ON public.sale_items;
+-- DROP FUNCTION IF EXISTS public.apply_sale_item_stock();
+-- DROP TRIGGER  IF EXISTS on_sale_item_set_branch ON public.sale_items;
+-- DROP FUNCTION IF EXISTS public.set_sale_item_branch();
+-- ALTER TABLE public.sale_items DROP COLUMN IF EXISTS branch_id;
+-- DROP TABLE IF EXISTS public.stock_movements CASCADE;
+-- DROP TABLE IF EXISTS public.branch_stock    CASCADE;
+-- ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_barcode_ean8_check;
+-- DROP INDEX IF EXISTS public.products_barcode_uidx;
+-- CREATE UNIQUE INDEX IF NOT EXISTS products_store_barcode_uidx
+--   ON public.products (store_id, barcode) WHERE barcode IS NOT NULL;
+-- ALTER TABLE public.products ALTER COLUMN barcode DROP NOT NULL;
+-- ALTER TABLE public.products ALTER COLUMN barcode DROP DEFAULT;
+-- DROP FUNCTION IF EXISTS public.next_product_code();
+-- DROP FUNCTION IF EXISTS public.ean8_check_digit(text);
+-- DROP SEQUENCE IF EXISTS public.product_code_seq;
+-- ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_store_id_id_key;
+-- ALTER TABLE public.branches DROP CONSTRAINT IF EXISTS branches_store_id_id_key;
+-- Generated codes are intentionally left in place — under restored Phase 1 semantics
+-- they are valid free text, so nothing is destroyed. Drop order is strict: the
+-- check-digit CHECK before the function it calls, triggers before their functions, the
+-- branch_id column before the tables that read it, both tables before the constraints
+-- they reference.
+

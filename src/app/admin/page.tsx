@@ -370,7 +370,13 @@ export default function AdminPage() {
       case 'staff':
         return <StaffManagementView storeId={userProfile?.store_id || null} />
       case 'stock':
-        return <StockView storeId={userProfile?.store_id || null} />
+        return (
+          <StockView
+            storeId={userProfile?.store_id || null}
+            branchId={selectedBranchId}
+            branchName={branches.find((b) => b.id === selectedBranchId)?.name}
+          />
+        )
       case 'branches':
         return (
           <BranchManager

@@ -14,6 +14,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   Tags,
   Plus,
   Pencil,
@@ -23,8 +30,53 @@ import {
   Package,
   Hash,
   DollarSign,
+  Boxes,
+  Power,
+  PowerOff,
+  Barcode as BarcodeIcon,
+  History,
+  Printer,
+  FileSpreadsheet,
+  PackagePlus,
 } from 'lucide-react'
 import { useToast, Toaster } from '@/components/ui/toast'
+import { ProductLabelPrinter, type LabelProduct } from './ProductLabel'
+import { ProductImportDialog } from './ProductImportDialog'
+import { ProductExportButton } from './ProductExportButton'
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface StockViewProps {
+  storeId: string | null
+  branchId: string | null
+  branchName?: string
+}
+
+interface Category {
+  id: string
+  name: string
+}
+
+interface Product {
+  id: string
+  store_id: string
+  category_id: string | null
+  name: string
+  barcode: string
+  purchase_price: number
+  sale_price: number
+  is_active: boolean
+}
+
+interface StockMovement {
+  id: string
+  reason: 'sale' | 'sale_reversal' | 'manual_adjustment' | 'restock' | 'import_ingress'
+  quantity_delta: number
+  applied_delta: number
+  resulting_balance: number
+  note: string | null
+  created_at: string
+}
 
 interface PriceRule {
   id: string
@@ -37,15 +89,28 @@ interface PriceRule {
   created_at: string
 }
 
-interface StockViewProps {
-  storeId: string | null
+type AdjustReason = 'manual_adjustment' | 'restock'
+
+const REASON_LABELS: Record<StockMovement['reason'], string> = {
+  sale: 'Venta',
+  sale_reversal: 'Reversión de venta',
+  manual_adjustment: 'Ajuste manual',
+  restock: 'Reposición',
+  import_ingress: 'Ingreso por importación',
 }
 
-const emptyForm = () => ({
+const emptyPriceRuleForm = () => ({
   product_name: '',
   quantity: '',
   special_price: '',
   unit_price: '',
+})
+
+const emptyProductForm = () => ({
+  name: '',
+  category_id: '' as string,
+  purchase_price: '',
+  sale_price: '',
 })
 
 const formatCLP = (value: number) =>
@@ -55,24 +120,393 @@ const formatCLP = (value: number) =>
     maximumFractionDigits: 0,
   }).format(value)
 
-export function StockView({ storeId }: StockViewProps) {
+export function StockView({ storeId, branchId, branchName }: StockViewProps) {
   const supabase = createClient()
+  const { toasts, toast, dismiss } = useToast()
+
+  const [activeTab, setActiveTab] = useState<'productos' | 'precios'>('productos')
+
+  // ── Products tab state ─────────────────────────────────────────────────────
+  const [products, setProducts] = useState<Product[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [branchStock, setBranchStock] = useState<Map<string, number>>(new Map())
+  const [productsLoading, setProductsLoading] = useState(true)
+
+  const [isProductModalOpen, setIsProductModalOpen] = useState(false)
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [productForm, setProductForm] = useState(emptyProductForm())
+  const [savingProduct, setSavingProduct] = useState(false)
+  const [productErrorMsg, setProductErrorMsg] = useState<string | null>(null)
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [creatingCategory, setCreatingCategory] = useState(false)
+
+  const [toggleProductTarget, setToggleProductTarget] = useState<Product | null>(null)
+  const [togglingProduct, setTogglingProduct] = useState(false)
+
+  const [adjustTarget, setAdjustTarget] = useState<Product | null>(null)
+  const [adjustDelta, setAdjustDelta] = useState('')
+  const [adjustReason, setAdjustReason] = useState<AdjustReason>('manual_adjustment')
+  const [adjustNote, setAdjustNote] = useState('')
+  const [adjusting, setAdjusting] = useState(false)
+  const [adjustErrorMsg, setAdjustErrorMsg] = useState<string | null>(null)
+
+  const [historyTarget, setHistoryTarget] = useState<Product | null>(null)
+  const [historyMovements, setHistoryMovements] = useState<StockMovement[]>([])
+  const [loadingHistory, setLoadingHistory] = useState(false)
+
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set())
+  const [labelQueue, setLabelQueue] = useState<LabelProduct[]>([])
+
+  const [isImportOpen, setIsImportOpen] = useState(false)
+  const [lastImported, setLastImported] = useState<LabelProduct[]>([])
+
+  const loadCategories = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('is_active', true)
+      .order('name', { ascending: true })
+    if (!error) setCategories((data as Category[]) || [])
+  }, [supabase])
+
+  const loadProducts = useCallback(async () => {
+    if (!storeId) return
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, store_id, category_id, name, barcode, purchase_price, sale_price, is_active')
+        .order('name', { ascending: true })
+      if (error) throw error
+      setProducts(
+        (data || []).map((p: Record<string, unknown>) => ({
+          ...p,
+          purchase_price: Number(p.purchase_price),
+          sale_price: Number(p.sale_price),
+        } as Product))
+      )
+
+      if (branchId) {
+        const { data: stockRows, error: stockErr } = await supabase
+          .from('branch_stock')
+          .select('product_id, current_stock')
+          .eq('branch_id', branchId)
+        if (!stockErr) {
+          setBranchStock(
+            new Map(((stockRows as { product_id: string; current_stock: number }[]) || []).map(
+              (s) => [s.product_id, s.current_stock]
+            ))
+          )
+        }
+      } else {
+        setBranchStock(new Map())
+      }
+    } catch (err: unknown) {
+      console.error('Error loading products:', err)
+    } finally {
+      setProductsLoading(false)
+    }
+  }, [storeId, branchId, supabase])
+
+  // Initial loads are inlined (not a bare `useEffect(() => loadX(), [loadX])`) to match
+  // this codebase's established mount-effect pattern (see BranchManager.tsx); the
+  // `useCallback` loaders above stay reusable for post-mutation reloads in handlers.
+  useEffect(() => {
+    let ignore = false
+    async function run() {
+      const { data, error } = await supabase
+        .from('categories')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('name', { ascending: true })
+      if (!ignore && !error) setCategories((data as Category[]) || [])
+    }
+    run()
+    return () => { ignore = true }
+  }, [supabase])
+
+  useEffect(() => {
+    let ignore = false
+    async function run() {
+      if (!storeId) return
+      try {
+        const { data, error } = await supabase
+          .from('products')
+          .select('id, store_id, category_id, name, barcode, purchase_price, sale_price, is_active')
+          .order('name', { ascending: true })
+        if (error) throw error
+        if (ignore) return
+        setProducts(
+          (data || []).map((p: Record<string, unknown>) => ({
+            ...p,
+            purchase_price: Number(p.purchase_price),
+            sale_price: Number(p.sale_price),
+          } as Product))
+        )
+
+        if (branchId) {
+          const { data: stockRows, error: stockErr } = await supabase
+            .from('branch_stock')
+            .select('product_id, current_stock')
+            .eq('branch_id', branchId)
+          if (!ignore && !stockErr) {
+            setBranchStock(
+              new Map(((stockRows as { product_id: string; current_stock: number }[]) || []).map(
+                (s) => [s.product_id, s.current_stock]
+              ))
+            )
+          }
+        } else if (!ignore) {
+          setBranchStock(new Map())
+        }
+      } catch (err: unknown) {
+        console.error('Error loading products:', err)
+      } finally {
+        if (!ignore) setProductsLoading(false)
+      }
+    }
+    run()
+    return () => { ignore = true }
+  }, [storeId, branchId, supabase])
+
+  // ── Product create / edit ──────────────────────────────────────────────────
+
+  const openCreateProduct = () => {
+    setEditingProduct(null)
+    setProductForm(emptyProductForm())
+    setProductErrorMsg(null)
+    setNewCategoryName('')
+    setIsProductModalOpen(true)
+  }
+
+  const openEditProduct = (product: Product) => {
+    setEditingProduct(product)
+    setProductForm({
+      name: product.name,
+      category_id: product.category_id || '',
+      purchase_price: String(product.purchase_price),
+      sale_price: String(product.sale_price),
+    })
+    setProductErrorMsg(null)
+    setNewCategoryName('')
+    setIsProductModalOpen(true)
+  }
+
+  const handleCreateCategoryInline = async () => {
+    const name = newCategoryName.trim()
+    if (!name || !storeId) return
+    setCreatingCategory(true)
+    try {
+      const { data, error } = await supabase
+        .from('categories')
+        .insert({ store_id: storeId, name })
+        .select('id, name')
+        .single()
+      if (error) throw error
+      setCategories((prev) => [...prev, data as Category].sort((a, b) => a.name.localeCompare(b.name)))
+      setProductForm((prev) => ({ ...prev, category_id: (data as Category).id }))
+      setNewCategoryName('')
+      toast('Categoría creada.', 'success')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al crear la categoría.'
+      toast(msg, 'error')
+    } finally {
+      setCreatingCategory(false)
+    }
+  }
+
+  const handleSaveProduct = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!storeId) return
+
+    const name = productForm.name.trim()
+    const purchase_price = parseFloat(productForm.purchase_price) || 0
+    const sale_price = parseFloat(productForm.sale_price) || 0
+
+    if (!name) { setProductErrorMsg('El nombre del producto no puede estar vacío.'); return }
+    if (sale_price < 0 || purchase_price < 0) { setProductErrorMsg('Los precios no pueden ser negativos.'); return }
+
+    const isEditing = !!editingProduct
+    const editingId = editingProduct?.id
+    setIsProductModalOpen(false)
+    setProductErrorMsg(null)
+    setSavingProduct(true)
+
+    try {
+      if (isEditing && editingId) {
+        // `barcode` is never part of this payload — it is system-generated and immutable.
+        const { error } = await supabase
+          .from('products')
+          .update({
+            name,
+            category_id: productForm.category_id || null,
+            purchase_price,
+            sale_price,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', editingId)
+        if (error) throw error
+        toast('Producto actualizado.', 'success')
+      } else {
+        // `barcode` omitted -> column DEFAULT public.next_product_code() generates it.
+        const { error } = await supabase
+          .from('products')
+          .insert({
+            store_id: storeId,
+            name,
+            category_id: productForm.category_id || null,
+            purchase_price,
+            sale_price,
+          })
+        if (error) throw error
+        toast('Producto creado.', 'success')
+      }
+      await loadProducts()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al guardar el producto.'
+      toast(msg, 'error')
+      await loadProducts()
+    } finally {
+      setSavingProduct(false)
+    }
+  }
+
+  const confirmToggleProduct = (product: Product) => setToggleProductTarget(product)
+
+  const handleToggleProduct = async () => {
+    if (!toggleProductTarget) return
+    const target = toggleProductTarget
+    const nextActive = !target.is_active
+    setToggleProductTarget(null)
+    setTogglingProduct(true)
+    try {
+      const { error } = await supabase
+        .from('products')
+        .update({ is_active: nextActive, updated_at: new Date().toISOString() })
+        .eq('id', target.id)
+      if (error) throw error
+      toast(nextActive ? 'Producto reactivado.' : 'Producto desactivado.', 'success')
+      await loadProducts()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al actualizar el producto.'
+      toast(msg, 'error')
+      await loadProducts()
+    } finally {
+      setTogglingProduct(false)
+    }
+  }
+
+  // ── Stock adjustment ───────────────────────────────────────────────────────
+
+  const openAdjustDialog = (product: Product) => {
+    setAdjustTarget(product)
+    setAdjustDelta('')
+    setAdjustReason('manual_adjustment')
+    setAdjustNote('')
+    setAdjustErrorMsg(null)
+  }
+
+  const handleAdjustSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!adjustTarget || !branchId) return
+
+    const delta = parseInt(adjustDelta, 10)
+    if (!delta || delta === 0 || Number.isNaN(delta)) {
+      setAdjustErrorMsg('Ingresá una cantidad distinta de cero (usá negativos para restar).')
+      return
+    }
+
+    const target = adjustTarget
+    setAdjustTarget(null)
+    setAdjusting(true)
+    try {
+      const { error } = await supabase.rpc('adjust_branch_stock', {
+        p_branch_id: branchId,
+        p_product_id: target.id,
+        p_delta: delta,
+        p_reason: adjustReason,
+        p_note: adjustNote.trim() || null,
+      })
+      if (error) throw error
+      toast(`Stock de "${target.name}" ajustado en ${branchName ?? 'la sucursal'}.`, 'success')
+      await loadProducts()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al ajustar el stock.'
+      toast(msg, 'error')
+    } finally {
+      setAdjusting(false)
+    }
+  }
+
+  // ── Movement history ───────────────────────────────────────────────────────
+
+  const openHistoryDialog = async (product: Product) => {
+    setHistoryTarget(product)
+    if (!branchId) return
+    setLoadingHistory(true)
+    try {
+      const { data, error } = await supabase
+        .from('stock_movements')
+        .select('id, reason, quantity_delta, applied_delta, resulting_balance, note, created_at')
+        .eq('branch_id', branchId)
+        .eq('product_id', product.id)
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) throw error
+      setHistoryMovements((data as StockMovement[]) || [])
+    } catch (err: unknown) {
+      console.error('Error loading stock movements:', err)
+      setHistoryMovements([])
+    } finally {
+      setLoadingHistory(false)
+    }
+  }
+
+  // ── Multi-select & label printing ──────────────────────────────────────────
+
+  const toggleSelectProduct = (id: string) => {
+    setSelectedProductIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const toLabelProduct = (p: Product): LabelProduct => ({
+    id: p.id, barcode: p.barcode, name: p.name, sale_price: p.sale_price,
+  })
+
+  const handlePrintSingle = (product: Product) => setLabelQueue([toLabelProduct(product)])
+
+  const handlePrintSelected = () => {
+    const selected = products.filter((p) => selectedProductIds.has(p.id))
+    if (selected.length === 0) return
+    setLabelQueue(selected.map(toLabelProduct))
+  }
+
+  const handleImported = (createdLabelProducts: LabelProduct[]) => {
+    setLastImported(createdLabelProducts)
+    loadProducts()
+    loadCategories()
+  }
+
+  const handlePrintImported = () => {
+    if (lastImported.length === 0) return
+    setLabelQueue(lastImported)
+  }
+
+  // ── Price rules tab (unchanged behaviour, moved into its own tab) ──────────
 
   const [rules, setRules] = useState<PriceRule[]>([])
-  const [loading, setLoading] = useState(true)
+  const [rulesLoading, setRulesLoading] = useState(true)
 
-  // Modal state
-  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isRuleModalOpen, setIsRuleModalOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<PriceRule | null>(null)
-  const [form, setForm] = useState(emptyForm())
-  const [saving, setSaving] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [ruleForm, setRuleForm] = useState(emptyPriceRuleForm())
+  const [savingRule, setSavingRule] = useState(false)
+  const [ruleErrorMsg, setRuleErrorMsg] = useState<string | null>(null)
 
-  // Delete confirmation state
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
-  const [deleting, setDeleting] = useState(false)
-
-  const { toasts, toast, dismiss } = useToast()
+  const [deleteRuleConfirmId, setDeleteRuleConfirmId] = useState<string | null>(null)
+  const [deletingRule, setDeletingRule] = useState(false)
 
   const loadRules = useCallback(async () => {
     if (!storeId) return
@@ -91,7 +525,7 @@ export function StockView({ storeId }: StockViewProps) {
     } catch (err: unknown) {
       console.error('Error loading price rules:', err)
     } finally {
-      setLoading(false)
+      setRulesLoading(false)
     }
   }, [storeId, supabase])
 
@@ -116,19 +550,16 @@ export function StockView({ storeId }: StockViewProps) {
       } catch (err: unknown) {
         console.error('Error loading price rules:', err)
       } finally {
-        if (!ignore) setLoading(false)
+        if (!ignore) setRulesLoading(false)
       }
     }
     run()
     return () => { ignore = true }
   }, [storeId, supabase])
 
-  // Derived: auto-calc unit_price when special_price or quantity changes
-  const handleFormChange = (field: string, rawValue: string) => {
-    setForm(prev => {
+  const handleRuleFormChange = (field: string, rawValue: string) => {
+    setRuleForm(prev => {
       const next = { ...prev, [field]: rawValue }
-
-      // When special_price or quantity changes, auto-calc unit_price
       if (field === 'special_price' || field === 'quantity') {
         const sp = parseFloat(field === 'special_price' ? rawValue : prev.special_price) || 0
         const qty = parseInt(field === 'quantity' ? rawValue : prev.quantity, 10) || 0
@@ -136,50 +567,48 @@ export function StockView({ storeId }: StockViewProps) {
           next.unit_price = Math.round(sp / qty).toString()
         }
       }
-
       return next
     })
   }
 
-  const openCreateModal = () => {
+  const openCreateRuleModal = () => {
     setEditingRule(null)
-    setForm(emptyForm())
-    setErrorMsg(null)
-    setIsModalOpen(true)
+    setRuleForm(emptyPriceRuleForm())
+    setRuleErrorMsg(null)
+    setIsRuleModalOpen(true)
   }
 
-  const openEditModal = (rule: PriceRule) => {
+  const openEditRuleModal = (rule: PriceRule) => {
     setEditingRule(rule)
-    setForm({
+    setRuleForm({
       product_name: rule.product_name,
       quantity: rule.quantity.toString(),
       special_price: rule.special_price.toString(),
       unit_price: rule.unit_price.toString(),
     })
-    setErrorMsg(null)
-    setIsModalOpen(true)
+    setRuleErrorMsg(null)
+    setIsRuleModalOpen(true)
   }
 
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSaveRule = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!storeId) return
 
-    const product_name = form.product_name.trim()
-    const quantity = parseInt(form.quantity, 10)
-    const special_price = parseFloat(form.special_price)
-    const unit_price = parseFloat(form.unit_price)
+    const product_name = ruleForm.product_name.trim()
+    const quantity = parseInt(ruleForm.quantity, 10)
+    const special_price = parseFloat(ruleForm.special_price)
+    const unit_price = parseFloat(ruleForm.unit_price)
 
-    if (!product_name) { setErrorMsg('El nombre del producto no puede estar vacío.'); return }
-    if (!quantity || quantity <= 0) { setErrorMsg('La cantidad debe ser mayor a 0.'); return }
-    if (!special_price || special_price <= 0) { setErrorMsg('El precio especial debe ser mayor a 0.'); return }
-    if (!unit_price || unit_price <= 0) { setErrorMsg('El precio unitario debe ser mayor a 0.'); return }
+    if (!product_name) { setRuleErrorMsg('El nombre del producto no puede estar vacío.'); return }
+    if (!quantity || quantity <= 0) { setRuleErrorMsg('La cantidad debe ser mayor a 0.'); return }
+    if (!special_price || special_price <= 0) { setRuleErrorMsg('El precio especial debe ser mayor a 0.'); return }
+    if (!unit_price || unit_price <= 0) { setRuleErrorMsg('El precio unitario debe ser mayor a 0.'); return }
 
-    // Optimistic: capture state and close modal immediately
     const isEditing = !!editingRule
     const editingId = editingRule?.id
-    setIsModalOpen(false)
-    setErrorMsg(null)
-    setSaving(true)
+    setIsRuleModalOpen(false)
+    setRuleErrorMsg(null)
+    setSavingRule(true)
 
     try {
       if (isEditing && editingId) {
@@ -202,15 +631,14 @@ export function StockView({ storeId }: StockViewProps) {
       toast(msg, 'error')
       await loadRules()
     } finally {
-      setSaving(false)
+      setSavingRule(false)
     }
   }
 
-  const handleDelete = async (id: string) => {
-    // Optimistic: close dialog and remove from list immediately
-    setDeleteConfirmId(null)
+  const handleDeleteRule = async (id: string) => {
+    setDeleteRuleConfirmId(null)
     setRules(prev => prev.filter(r => r.id !== id))
-    setDeleting(true)
+    setDeletingRule(true)
     try {
       const { error } = await supabase
         .from('product_price_rules')
@@ -221,18 +649,355 @@ export function StockView({ storeId }: StockViewProps) {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Error al eliminar.'
       toast(msg, 'error')
-      await loadRules() // restore on error
+      await loadRules()
     } finally {
-      setDeleting(false)
+      setDeletingRule(false)
     }
   }
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <>
       <Toaster toasts={toasts} dismiss={dismiss} />
 
-      {/* Delete Confirm Dialog */}
-      <Dialog open={!!deleteConfirmId} onOpenChange={(open) => { if (!open) setDeleteConfirmId(null) }}>
+      <ProductLabelPrinter products={labelQueue} onPrinted={() => setLabelQueue([])} />
+
+      <ProductImportDialog
+        open={isImportOpen}
+        onClose={() => setIsImportOpen(false)}
+        storeId={storeId}
+        onImported={handleImported}
+      />
+
+      {/* Deactivate/Reactivate product confirm */}
+      <Dialog open={!!toggleProductTarget} onOpenChange={(open) => { if (!open) setToggleProductTarget(null) }}>
+        <DialogContent className="sm:max-w-sm bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
+              {toggleProductTarget?.is_active ? '¿Desactivar este producto?' : '¿Reactivar este producto?'}
+            </DialogTitle>
+            <DialogDescription className="text-sm text-zinc-500 dark:text-zinc-400">
+              {toggleProductTarget?.is_active
+                ? 'El producto dejará de aparecer como activo, pero su historial de ventas y movimientos se conserva.'
+                : 'El producto volverá a estar disponible.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setToggleProductTarget(null)}
+              disabled={togglingProduct}
+              className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer"
+            >
+              Cancelar
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleToggleProduct}
+              disabled={togglingProduct}
+              className={`h-9 px-4 rounded-xl text-white text-xs font-semibold cursor-pointer flex items-center gap-1.5 ${
+                toggleProductTarget?.is_active ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
+            >
+              {togglingProduct ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : toggleProductTarget?.is_active ? (
+                <PowerOff className="h-3.5 w-3.5" />
+              ) : (
+                <Power className="h-3.5 w-3.5" />
+              )}
+              {toggleProductTarget?.is_active ? 'Desactivar' : 'Reactivar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Product create / edit modal */}
+      <Dialog open={isProductModalOpen} onOpenChange={setIsProductModalOpen}>
+        <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl p-0 overflow-hidden">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-100 dark:border-zinc-800">
+            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+              <Package className="h-4 w-4 text-zinc-400" />
+              {editingProduct ? 'Editar Producto' : 'Nuevo Producto'}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+              {editingProduct
+                ? 'El código de barras no se puede editar.'
+                : 'El código de barras (EAN-8) se genera automáticamente al guardar.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleSaveProduct}>
+            <div className="px-6 py-5 space-y-4">
+              {editingProduct && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
+                    <BarcodeIcon className="h-3.5 w-3.5 text-zinc-400" />
+                    Código de Barras
+                  </Label>
+                  <div className="h-10 px-3 flex items-center rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800/70 text-sm font-mono tracking-widest text-zinc-500">
+                    {editingProduct.barcode}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Label htmlFor="product-name" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
+                  <Package className="h-3.5 w-3.5 text-zinc-400" />
+                  Nombre del Producto
+                </Label>
+                <Input
+                  id="product-name"
+                  placeholder="Ej: Remera, Gorra, Jean..."
+                  value={productForm.name}
+                  onChange={(e) => setProductForm(prev => ({ ...prev, name: e.target.value }))}
+                  disabled={savingProduct}
+                  className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Categoría
+                </Label>
+                <Select
+                  value={productForm.category_id || undefined}
+                  onValueChange={(v) => setProductForm(prev => ({ ...prev, category_id: v as string }))}
+                >
+                  <SelectTrigger className="h-10 w-full rounded-xl border-zinc-200 dark:border-zinc-700 text-sm">
+                    <SelectValue placeholder="Sin categoría">
+                      {(value: string | null) => categories.find((c) => c.id === value)?.name ?? 'Sin categoría'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="flex gap-1.5 pt-1">
+                  <Input
+                    placeholder="Nueva categoría..."
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    disabled={creatingCategory}
+                    className="h-8 rounded-lg border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-xs"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCreateCategoryInline}
+                    disabled={creatingCategory || !newCategoryName.trim()}
+                    className="h-8 px-2.5 rounded-lg text-[11px] font-semibold cursor-pointer shrink-0"
+                  >
+                    {creatingCategory ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Agregar'}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
+                    <DollarSign className="h-3.5 w-3.5 text-zinc-400" />
+                    Precio Costo
+                  </Label>
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={productForm.purchase_price}
+                    onChange={(e) => setProductForm(prev => ({ ...prev, purchase_price: e.target.value.replace(/[^\d.]/g, '') }))}
+                    disabled={savingProduct}
+                    className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm font-bold"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
+                    <DollarSign className="h-3.5 w-3.5 text-emerald-500" />
+                    Precio Venta
+                  </Label>
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={productForm.sale_price}
+                    onChange={(e) => setProductForm(prev => ({ ...prev, sale_price: e.target.value.replace(/[^\d.]/g, '') }))}
+                    disabled={savingProduct}
+                    className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm font-bold focus-visible:ring-emerald-500 focus-visible:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {productErrorMsg && (
+                <div className="flex items-start gap-2 p-3 text-xs text-red-600 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-xl font-medium">
+                  <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{productErrorMsg}</span>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter className="px-6 py-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900 flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsProductModalOpen(false)}
+                className="h-9 px-4 rounded-xl border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer text-xs font-semibold flex-1 sm:flex-none"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="submit"
+                className="h-9 px-5 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex-1 sm:flex-none"
+              >
+                {editingProduct ? 'Guardar Cambios' : 'Crear Producto'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Adjust stock dialog */}
+      <Dialog open={!!adjustTarget} onOpenChange={(open) => { if (!open) setAdjustTarget(null) }}>
+        <DialogContent className="sm:max-w-sm bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl p-0 overflow-hidden">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-100 dark:border-zinc-800">
+            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+              <Boxes className="h-4 w-4 text-zinc-400" />
+              Ajustar Stock
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+              {adjustTarget?.name} · {branchName ?? 'Sucursal seleccionada'}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleAdjustSubmit}>
+            <div className="px-6 py-5 space-y-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Cantidad (usá negativos para restar)
+                </Label>
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Ej: 10 o -5"
+                  value={adjustDelta}
+                  onChange={(e) => setAdjustDelta(e.target.value.replace(/[^\d-]/g, ''))}
+                  disabled={adjusting}
+                  className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm font-bold"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">Motivo</Label>
+                <Select value={adjustReason} onValueChange={(v) => setAdjustReason(v as AdjustReason)}>
+                  <SelectTrigger className="h-10 w-full rounded-xl border-zinc-200 dark:border-zinc-700 text-sm">
+                    <SelectValue>
+                      {(value: string) => value === 'restock' ? 'Reposición' : 'Ajuste manual'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="manual_adjustment">Ajuste manual</SelectItem>
+                    <SelectItem value="restock">Reposición</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">Nota (opcional)</Label>
+                <Input
+                  placeholder="Ej: Conteo físico, mercadería dañada..."
+                  value={adjustNote}
+                  onChange={(e) => setAdjustNote(e.target.value)}
+                  disabled={adjusting}
+                  className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm"
+                />
+              </div>
+              {adjustErrorMsg && (
+                <div className="flex items-start gap-2 p-3 text-xs text-red-600 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-xl font-medium">
+                  <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{adjustErrorMsg}</span>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="px-6 py-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900 flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAdjustTarget(null)}
+                className="h-9 px-4 rounded-xl border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer text-xs font-semibold flex-1 sm:flex-none"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="submit"
+                disabled={adjusting}
+                className="h-9 px-5 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex-1 sm:flex-none flex items-center justify-center gap-1.5"
+              >
+                {adjusting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                Confirmar Ajuste
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Movement history dialog */}
+      <Dialog open={!!historyTarget} onOpenChange={(open) => { if (!open) setHistoryTarget(null) }}>
+        <DialogContent className="sm:max-w-lg bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl p-0 overflow-hidden max-h-[80vh] flex flex-col">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-100 dark:border-zinc-800 shrink-0">
+            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+              <History className="h-4 w-4 text-zinc-400" />
+              Historial de Movimientos
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-500 dark:text-zinc-400">
+              {historyTarget?.name} · {branchName ?? 'Sucursal seleccionada'} · solo lectura
+            </DialogDescription>
+          </DialogHeader>
+          <div className="px-6 py-4 overflow-y-auto">
+            {loadingHistory ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map(i => <div key={i} className="h-10 rounded-lg bg-zinc-100 dark:bg-zinc-800/50 animate-pulse" />)}
+              </div>
+            ) : historyMovements.length === 0 ? (
+              <p className="text-xs text-zinc-400 text-center py-8">Sin movimientos registrados para esta sucursal.</p>
+            ) : (
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {historyMovements.map((m) => (
+                  <div key={m.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-zinc-700 dark:text-zinc-200">{REASON_LABELS[m.reason]}</p>
+                      <p className="text-zinc-400 text-[10px]">
+                        {new Date(m.created_at).toLocaleString('es-CL')}
+                        {m.note ? ` · ${m.note}` : ''}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className={`font-bold tabular-nums ${m.applied_delta >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                        {m.applied_delta >= 0 ? '+' : ''}{m.applied_delta}
+                      </p>
+                      <p className="text-zinc-400 text-[10px]">saldo: {m.resulting_balance}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="px-6 py-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900 shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setHistoryTarget(null)}
+              className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer"
+            >
+              Cerrar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Price rule delete confirm */}
+      <Dialog open={!!deleteRuleConfirmId} onOpenChange={(open) => { if (!open) setDeleteRuleConfirmId(null) }}>
         <DialogContent className="sm:max-w-sm bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl">
           <DialogHeader>
             <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
@@ -246,27 +1011,27 @@ export function StockView({ storeId }: StockViewProps) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setDeleteConfirmId(null)}
-              disabled={deleting}
+              onClick={() => setDeleteRuleConfirmId(null)}
+              disabled={deletingRule}
               className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer"
             >
               Cancelar
             </Button>
             <Button
               size="sm"
-              onClick={() => deleteConfirmId && handleDelete(deleteConfirmId)}
-              disabled={deleting}
+              onClick={() => deleteRuleConfirmId && handleDeleteRule(deleteRuleConfirmId)}
+              disabled={deletingRule}
               className="h-9 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold cursor-pointer flex items-center gap-1.5"
             >
-              {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              {deletingRule ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
               Eliminar
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Create / Edit Modal */}
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
+      {/* Price rule create / edit modal */}
+      <Dialog open={isRuleModalOpen} onOpenChange={setIsRuleModalOpen}>
         <DialogContent className="sm:max-w-md bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl p-0 overflow-hidden">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-100 dark:border-zinc-800">
             <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
@@ -280,10 +1045,8 @@ export function StockView({ storeId }: StockViewProps) {
             </DialogDescription>
           </DialogHeader>
 
-          <form onSubmit={handleSave}>
+          <form onSubmit={handleSaveRule}>
             <div className="px-6 py-5 space-y-4">
-
-              {/* Product Name */}
               <div className="space-y-1.5">
                 <Label htmlFor="rule-product-name" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
                   <Package className="h-3.5 w-3.5 text-zinc-400" />
@@ -292,14 +1055,13 @@ export function StockView({ storeId }: StockViewProps) {
                 <Input
                   id="rule-product-name"
                   placeholder="Ej: Remera, Gorra, Jean..."
-                  value={form.product_name}
-                  onChange={(e) => handleFormChange('product_name', e.target.value)}
-                  disabled={saving}
+                  value={ruleForm.product_name}
+                  onChange={(e) => handleRuleFormChange('product_name', e.target.value)}
+                  disabled={savingRule}
                   className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm"
                 />
               </div>
 
-              {/* Quantity */}
               <div className="space-y-1.5">
                 <Label htmlFor="rule-quantity" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
                   <Hash className="h-3.5 w-3.5 text-zinc-400" />
@@ -311,14 +1073,13 @@ export function StockView({ storeId }: StockViewProps) {
                   type="text"
                   inputMode="numeric"
                   placeholder="12"
-                  value={form.quantity}
-                  onChange={(e) => handleFormChange('quantity', e.target.value.replace(/\D/g, ''))}
-                  disabled={saving}
+                  value={ruleForm.quantity}
+                  onChange={(e) => handleRuleFormChange('quantity', e.target.value.replace(/\D/g, ''))}
+                  disabled={savingRule}
                   className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm font-bold"
                 />
               </div>
 
-              {/* Special Price + Unit Price side by side */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="rule-special-price" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
@@ -330,14 +1091,14 @@ export function StockView({ storeId }: StockViewProps) {
                     type="text"
                     inputMode="numeric"
                     placeholder="50000"
-                    value={form.special_price}
-                    onChange={(e) => handleFormChange('special_price', e.target.value.replace(/\D/g, ''))}
-                    disabled={saving}
+                    value={ruleForm.special_price}
+                    onChange={(e) => handleRuleFormChange('special_price', e.target.value.replace(/\D/g, ''))}
+                    disabled={savingRule}
                     className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm font-bold focus-visible:ring-emerald-500 focus-visible:border-emerald-500"
                   />
-                  {form.special_price && (
+                  {ruleForm.special_price && (
                     <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium pl-1">
-                      {formatCLP(parseFloat(form.special_price) || 0)}
+                      {formatCLP(parseFloat(ruleForm.special_price) || 0)}
                     </p>
                   )}
                 </div>
@@ -353,38 +1114,37 @@ export function StockView({ storeId }: StockViewProps) {
                     type="text"
                     inputMode="numeric"
                     placeholder="0"
-                    value={form.unit_price}
-                    onChange={(e) => setForm(prev => ({ ...prev, unit_price: e.target.value.replace(/\D/g, '') }))}
-                    disabled={saving}
+                    value={ruleForm.unit_price}
+                    onChange={(e) => setRuleForm(prev => ({ ...prev, unit_price: e.target.value.replace(/\D/g, '') }))}
+                    disabled={savingRule}
                     className="h-10 rounded-xl border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-sm font-bold"
                   />
-                  {form.unit_price && (
+                  {ruleForm.unit_price && (
                     <p className="text-[10px] text-zinc-500 font-medium pl-1">
-                      {formatCLP(parseFloat(form.unit_price) || 0)} c/u
+                      {formatCLP(parseFloat(ruleForm.unit_price) || 0)} c/u
                     </p>
                   )}
                 </div>
               </div>
 
-              {/* Summary pill */}
-              {form.product_name && form.quantity && form.special_price && (
+              {ruleForm.product_name && ruleForm.quantity && ruleForm.special_price && (
                 <div className="flex items-center gap-2 p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200/60 dark:border-zinc-700/40 text-xs">
                   <Tags className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
                   <span className="text-zinc-600 dark:text-zinc-300">
-                    <span className="font-bold text-zinc-900 dark:text-zinc-50">{form.quantity}× {form.product_name || '...'}</span>
+                    <span className="font-bold text-zinc-900 dark:text-zinc-50">{ruleForm.quantity}× {ruleForm.product_name || '...'}</span>
                     {' → '}
                     <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                      {formatCLP(parseFloat(form.special_price) || 0)}
+                      {formatCLP(parseFloat(ruleForm.special_price) || 0)}
                     </span>
                     {' total'}
                   </span>
                 </div>
               )}
 
-              {errorMsg && (
+              {ruleErrorMsg && (
                 <div className="flex items-start gap-2 p-3 text-xs text-red-600 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-xl font-medium">
                   <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-                  <span>{errorMsg}</span>
+                  <span>{ruleErrorMsg}</span>
                 </div>
               )}
             </div>
@@ -394,7 +1154,7 @@ export function StockView({ storeId }: StockViewProps) {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setIsModalOpen(false)}
+                onClick={() => setIsRuleModalOpen(false)}
                 className="h-9 px-4 rounded-xl border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer text-xs font-semibold flex-1 sm:flex-none"
               >
                 Cancelar
@@ -412,139 +1172,346 @@ export function StockView({ storeId }: StockViewProps) {
 
       {/* Main View */}
       <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
-              <Tags className="h-5 w-5 text-zinc-400" />
-              Stock / Precios Especiales
-            </h2>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              Definí reglas de precio por cantidad. Aparecerán como sugerencias al cargar ventas.
-            </p>
-          </div>
-          <Button
-            onClick={openCreateModal}
-            className="h-9 px-4 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex items-center gap-1.5 shrink-0"
+        {/* Tabs */}
+        <div className="flex items-center gap-1.5 border-b border-zinc-200/80 dark:border-zinc-800/80">
+          <button
+            onClick={() => setActiveTab('productos')}
+            className={`px-4 py-2.5 text-sm font-semibold cursor-pointer border-b-2 -mb-px transition-colors ${
+              activeTab === 'productos'
+                ? 'border-zinc-900 text-zinc-900 dark:border-zinc-50 dark:text-zinc-50'
+                : 'border-transparent text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
+            }`}
           >
-            <Plus className="h-4 w-4" />
-            Nueva Regla
-          </Button>
+            Productos
+          </button>
+          <button
+            onClick={() => setActiveTab('precios')}
+            className={`px-4 py-2.5 text-sm font-semibold cursor-pointer border-b-2 -mb-px transition-colors ${
+              activeTab === 'precios'
+                ? 'border-zinc-900 text-zinc-900 dark:border-zinc-50 dark:text-zinc-50'
+                : 'border-transparent text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
+            }`}
+          >
+            Precios Especiales
+          </button>
         </div>
 
-        {/* Table / Empty state */}
-        {loading ? (
-          <div className="space-y-2">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="h-16 rounded-xl bg-zinc-100 dark:bg-zinc-800/50 animate-pulse" />
-            ))}
-          </div>
-        ) : rules.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-100 dark:bg-zinc-800 mb-4">
-              <Tags className="h-7 w-7 text-zinc-400" />
-            </div>
-            <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
-              Sin reglas de precio
-            </h3>
-            <p className="text-xs text-zinc-400 dark:text-zinc-500 max-w-xs mb-5">
-              Creá tu primera regla para que aparezcan sugerencias de precio especial al cargar ventas.
-            </p>
-            <Button
-              onClick={openCreateModal}
-              variant="outline"
-              className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Crear primera regla
-            </Button>
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900 overflow-hidden shadow-xs">
-            {/* Table Header */}
-            <div className="grid grid-cols-[1fr_80px_130px_130px_80px] gap-3 px-5 py-3 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800">
-              <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Producto</span>
-              <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-center">Cantidad</span>
-              <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-right">P. Unitario</span>
-              <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-right">Precio Especial</span>
-              <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-center">Acciones</span>
-            </div>
-
-            {/* Rows */}
-            <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {rules.map((rule) => (
-                <div
-                  key={rule.id}
-                  className="grid grid-cols-[1fr_80px_130px_130px_80px] gap-3 px-5 py-4 items-center hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 transition-colors duration-150 group"
+        {activeTab === 'productos' && (
+          <div className="space-y-4">
+            {/* Header */}
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+                  <Package className="h-5 w-5 text-zinc-400" />
+                  Productos
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                  Stock mostrado para: <span className="font-semibold text-zinc-700 dark:text-zinc-300">{branchName ?? 'Ninguna sucursal seleccionada'}</span>
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedProductIds.size > 0 && (
+                  <Button
+                    variant="outline"
+                    onClick={handlePrintSelected}
+                    className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    Imprimir ({selectedProductIds.size})
+                  </Button>
+                )}
+                {lastImported.length > 0 && (
+                  <Button
+                    variant="outline"
+                    onClick={handlePrintImported}
+                    className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    Imprimir importados ({lastImported.length})
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  onClick={() => setIsImportOpen(true)}
+                  className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
                 >
-                  {/* Product name */}
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-100 dark:bg-zinc-800 shrink-0">
-                      <Package className="h-4 w-4 text-zinc-500 dark:text-zinc-400" />
-                    </div>
-                    <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 truncate">
-                      {rule.product_name}
-                    </span>
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  Importar
+                </Button>
+                <ProductExportButton storeId={storeId} branchId={branchId} branchName={branchName} />
+                <Button
+                  onClick={openCreateProduct}
+                  className="h-9 px-4 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex items-center gap-1.5 shrink-0"
+                >
+                  <Plus className="h-4 w-4" />
+                  Nuevo Producto
+                </Button>
+              </div>
+            </div>
+
+            {/* Table / Empty state */}
+            {productsLoading ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="h-16 rounded-xl bg-zinc-100 dark:bg-zinc-800/50 animate-pulse" />
+                ))}
+              </div>
+            ) : products.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-100 dark:bg-zinc-800 mb-4">
+                  <PackagePlus className="h-7 w-7 text-zinc-400" />
+                </div>
+                <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Sin productos
+                </h3>
+                <p className="text-xs text-zinc-400 dark:text-zinc-500 max-w-xs mb-5">
+                  Creá tu primer producto manualmente o importá tu catálogo desde un archivo Excel.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={openCreateProduct}
+                    variant="outline"
+                    className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Crear producto
+                  </Button>
+                  <Button
+                    onClick={() => setIsImportOpen(true)}
+                    variant="outline"
+                    className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5" />
+                    Importar Excel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900 overflow-hidden shadow-xs overflow-x-auto">
+                <div className="min-w-[900px]">
+                  <div className="grid grid-cols-[28px_1.4fr_1fr_110px_100px_100px_90px_180px] gap-3 px-5 py-3 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800">
+                    <span />
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Producto</span>
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Categoría</span>
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Código</span>
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-right">Costo</span>
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-right">Venta</span>
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-center">Stock</span>
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-center">Acciones</span>
                   </div>
 
-                  {/* Quantity */}
-                  <div className="text-center">
-                    <span className="inline-flex items-center justify-center h-7 min-w-[2rem] px-2 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                      ×{rule.quantity}
-                    </span>
-                  </div>
-
-                  {/* Unit price */}
-                  <div className="text-right">
-                    <span className="text-sm font-medium text-zinc-600 dark:text-zinc-400 tabular-nums">
-                      {formatCLP(rule.unit_price)}
-                    </span>
-                    <span className="text-[10px] text-zinc-400 block">c/u</span>
-                  </div>
-
-                  {/* Special price */}
-                  <div className="text-right">
-                    <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                      {formatCLP(rule.special_price)}
-                    </span>
-                    <span className="text-[10px] text-zinc-400 block">total</span>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center justify-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                    <button
-                      onClick={() => openEditModal(rule)}
-                      className="h-8 w-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
-                      title="Editar"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={() => setDeleteConfirmId(rule.id)}
-                      className="h-8 w-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-950/30 transition-all cursor-pointer"
-                      title="Eliminar"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                  <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                    {products.map((product) => (
+                      <div
+                        key={product.id}
+                        className={`grid grid-cols-[28px_1.4fr_1fr_110px_100px_100px_90px_180px] gap-3 px-5 py-3 items-center hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 transition-colors duration-150 group ${
+                          !product.is_active ? 'opacity-50' : ''
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedProductIds.has(product.id)}
+                          onChange={() => toggleSelectProduct(product.id)}
+                          className="h-4 w-4 rounded border-zinc-300 dark:border-zinc-600 accent-zinc-900 dark:accent-zinc-50 cursor-pointer"
+                        />
+                        <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 truncate">
+                          {product.name}
+                        </span>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+                          {categories.find(c => c.id === product.category_id)?.name ?? '—'}
+                        </span>
+                        <span className="text-[11px] font-mono text-zinc-400 tracking-wide">{product.barcode}</span>
+                        <span className="text-sm text-zinc-600 dark:text-zinc-400 text-right tabular-nums">
+                          {formatCLP(product.purchase_price)}
+                        </span>
+                        <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 text-right tabular-nums">
+                          {formatCLP(product.sale_price)}
+                        </span>
+                        <span className="text-sm font-bold text-center tabular-nums">
+                          {branchId ? (branchStock.get(product.id) ?? 0) : '—'}
+                        </span>
+                        <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                          <button
+                            onClick={() => openEditProduct(product)}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
+                            title="Editar"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => openAdjustDialog(product)}
+                            disabled={!branchId}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Ajustar stock"
+                          >
+                            <Boxes className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => openHistoryDialog(product)}
+                            disabled={!branchId}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Historial de movimientos"
+                          >
+                            <History className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handlePrintSingle(product)}
+                            className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
+                            title="Imprimir etiqueta"
+                          >
+                            <Printer className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => confirmToggleProduct(product)}
+                            className={`h-7 w-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                              product.is_active
+                                ? 'text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-950/30'
+                                : 'text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:text-emerald-400 dark:hover:bg-emerald-950/30'
+                            }`}
+                            title={product.is_active ? 'Desactivar' : 'Reactivar'}
+                          >
+                            {product.is_active ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Info box */}
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200/60 dark:border-zinc-700/40 text-xs text-zinc-500 dark:text-zinc-400">
-          <Tags className="h-4 w-4 text-zinc-400 shrink-0 mt-0.5" />
-          <div>
-            <span className="font-semibold text-zinc-700 dark:text-zinc-300">¿Cómo funcionan las reglas?</span>
-            <p className="mt-0.5 leading-relaxed">
-              Cuando un empleado carga una venta y escribe un producto que coincide con una regla, 
-              verá una sugerencia de precio especial. También puede editar el importe total directamente 
-              en cualquier momento.
-            </p>
+        {activeTab === 'precios' && (
+          <div className="space-y-6">
+            {/* Header */}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+                  <Tags className="h-5 w-5 text-zinc-400" />
+                  Precios Especiales
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                  Definí reglas de precio por cantidad. Aparecerán como sugerencias al cargar ventas.
+                </p>
+              </div>
+              <Button
+                onClick={openCreateRuleModal}
+                className="h-9 px-4 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex items-center gap-1.5 shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                Nueva Regla
+              </Button>
+            </div>
+
+            {/* Table / Empty state */}
+            {rulesLoading ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="h-16 rounded-xl bg-zinc-100 dark:bg-zinc-800/50 animate-pulse" />
+                ))}
+              </div>
+            ) : rules.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-100 dark:bg-zinc-800 mb-4">
+                  <Tags className="h-7 w-7 text-zinc-400" />
+                </div>
+                <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Sin reglas de precio
+                </h3>
+                <p className="text-xs text-zinc-400 dark:text-zinc-500 max-w-xs mb-5">
+                  Creá tu primera regla para que aparezcan sugerencias de precio especial al cargar ventas.
+                </p>
+                <Button
+                  onClick={openCreateRuleModal}
+                  variant="outline"
+                  className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Crear primera regla
+                </Button>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900 overflow-hidden shadow-xs">
+                <div className="grid grid-cols-[1fr_80px_130px_130px_80px] gap-3 px-5 py-3 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800">
+                  <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Producto</span>
+                  <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-center">Cantidad</span>
+                  <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-right">P. Unitario</span>
+                  <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-right">Precio Especial</span>
+                  <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider text-center">Acciones</span>
+                </div>
+
+                <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                  {rules.map((rule) => (
+                    <div
+                      key={rule.id}
+                      className="grid grid-cols-[1fr_80px_130px_130px_80px] gap-3 px-5 py-4 items-center hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 transition-colors duration-150 group"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-100 dark:bg-zinc-800 shrink-0">
+                          <Package className="h-4 w-4 text-zinc-500 dark:text-zinc-400" />
+                        </div>
+                        <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 truncate">
+                          {rule.product_name}
+                        </span>
+                      </div>
+
+                      <div className="text-center">
+                        <span className="inline-flex items-center justify-center h-7 min-w-[2rem] px-2 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
+                          ×{rule.quantity}
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-sm font-medium text-zinc-600 dark:text-zinc-400 tabular-nums">
+                          {formatCLP(rule.unit_price)}
+                        </span>
+                        <span className="text-[10px] text-zinc-400 block">c/u</span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                          {formatCLP(rule.special_price)}
+                        </span>
+                        <span className="text-[10px] text-zinc-400 block">total</span>
+                      </div>
+
+                      <div className="flex items-center justify-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                        <button
+                          onClick={() => openEditRuleModal(rule)}
+                          className="h-8 w-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:text-zinc-200 dark:hover:bg-zinc-800 transition-all cursor-pointer"
+                          title="Editar"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setDeleteRuleConfirmId(rule.id)}
+                          className="h-8 w-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-950/30 transition-all cursor-pointer"
+                          title="Eliminar"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Info box */}
+            <div className="flex items-start gap-3 p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200/60 dark:border-zinc-700/40 text-xs text-zinc-500 dark:text-zinc-400">
+              <Tags className="h-4 w-4 text-zinc-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-zinc-700 dark:text-zinc-300">¿Cómo funcionan las reglas?</span>
+                <p className="mt-0.5 leading-relaxed">
+                  Cuando un empleado carga una venta y escribe un producto que coincide con una regla,
+                  verá una sugerencia de precio especial. También puede editar el importe total directamente
+                  en cualquier momento.
+                </p>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </>
   )

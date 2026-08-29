@@ -33,22 +33,74 @@ phases:
       check-digit function, barcode conversion via column DEFAULT, and
       adjust_branch_stock(). sale_items.branch_id is DENORMALIZED and filled by
       a BEFORE INSERT trigger, because the AFTER DELETE reversal cannot join to
-      an already-cascaded sales row. Excel library: exceljs (dynamic import),
-      with an apply-time registry/bundle preflight and a documented fallback to
-      read-excel-file + write-excel-file.
+      an already-cascaded sales row. EAN-8 checksum independently hand-verified
+      by the orchestrator against the GS1 published example (96385074) - correct.
+    orchestrator_correction: >
+      The sub-agent's original Excel library pick (exceljs) was verified and
+      REJECTED by the orchestrator using WebSearch + `npm view`: exceljs's last
+      publish was 4.4.0 in December 2024 (~20 months stale) with Node-oriented
+      deps (archiver, unzipper, tmp, readable-stream) prone to browser-bundle
+      friction. Switched to read-excel-file (v9.3.10, published 2026-08-10) +
+      write-excel-file (v4.1.1, published 2026-06-08), both verified current via
+      npm and context7 docs. design.md's library decision, diagram, Excel
+      Contract, and File Changes table were all rewritten to match the actual
+      read-excel-file/write-excel-file APIs (schemaless raw-grid read + manual
+      header normalization, instead of exceljs's cell-union type).
   tasks:
-    status: stale
+    status: done
     artifact: tasks.md
     note: >
-      Leftover from the pre-branch single-store-stock model. Must be rewritten
-      after spec and design are redone against the 2026-08-29 proposal.md.
+      Full rewrite 2026-08-29 against the branch-scoped model, replacing the
+      stale pre-branch tasks.md. 5 phases: (1) migration.sql section 15
+      schema + EAN-8 codes with pre-apply probes and verification, (2)
+      StockView per-branch stock UI, (3) deps install + ProductLabel + batch
+      print, (4) ProductImportDialog, (5) ProductExportButton + integration +
+      docs. Review Workload Forecast: 400-line budget risk High
+      (~1450-1700 estimated changed lines), 5 suggested chained work units,
+      chain strategy left "pending" for the orchestrator to ask the user
+      (delivery_strategy: ask-on-risk). Verification tasks phrased as "target
+      database" per the session's production-only override, not hardcoded
+      "development branch".
   apply:
-    status: pending
+    status: done
+    note: >
+      Applied 2026-08-29. The sdd-apply sub-agent crashed mid-run on an
+      unrelated org-policy error (oauth_org_not_allowed) after completing all
+      31 code-level tasks across 5 phases (npm run build clean). Orchestrator:
+      (1) fixed one bug the crashed agent had flagged but not finished - a
+      ProductLabelPrinter dedup-guard that never reset on queue-clear; (2)
+      code-reviewed migration.sql section 15, ProductImportDialog.tsx,
+      ProductExportButton.tsx for the resolved decisions (unmatched-ID ->
+      create, additive-only stock, Margen%/Totales never read, barcode
+      round-trips as text preserving leading zeros); (3) applied section 15
+      directly to production after re-confirming products=0 rows; (4) ran the
+      full DB-side verification suite (EAN-8 checksum, barcode uniqueness/
+      CHECK, composite FK cross-store rejection, and the complete oversell/
+      reversal round-trip: stock 3 -> sell 5 -> clamped to 0 -> delete sale ->
+      restored to 3, not 5); (5) get_advisors: no new finding class.
+      gentle-ai sdd-attempt settle returned blocked(maintainer_decision) - an
+      internal runtime-ledger bookkeeping state, not a code or deployment
+      blocker; left unresolved as it requires an explicit maintainer reset
+      this session should not perform unilaterally.
+    remaining_manual_verification: >
+      Tasks 1.17/1.18/1.20 (RLS/role-based denial as a real employee/admin
+      session) and phase tasks 2.6, 3.6 (physical EAN-8 scanner), 4.8 (real
+      reference .xlsx end-to-end), 5.4 (export -> re-import round-trip) all
+      require driving the live app as an authenticated user or with physical
+      hardware - not verifiable via execute_sql. User should complete these
+      manually; see tasks.md for exact steps.
   verify:
     status: pending
   archive:
     status: pending
-next_recommended: sdd-tasks
+next_recommended: "sdd-verify (after user completes manual UI/scanner verification per tasks.md)"
+review_workload_decision:
+  resolved_by: user
+  decision: >
+    size:exception accepted - single PR, not chained. Same choice as
+    store-branches. ~1450-1700 estimated lines, well above the 400 budget,
+    accepted knowingly.
+  delivery_strategy_for_apply: size:exception
 status: in_progress
 unpaused_reason: >
   store-branches landed: branches table, profiles.branch_id,

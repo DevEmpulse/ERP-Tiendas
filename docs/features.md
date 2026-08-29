@@ -33,9 +33,38 @@ El componente `ReceiptModal.tsx` se encarga de renderizar e imprimir los comprob
 
 ---
 
-## 🏷️ 3. Reglas de Precio Especial por Cantidad (Stock)
+## 📦 3. Catálogo de Productos y Stock por Sucursal (Stock Phase 2)
 
-El módulo `StockView.tsx` administra las reglas de precios promocionales automáticos.
+`StockView.tsx` tiene dos pestañas: **Productos** (catálogo + stock, esta sección) y **Precios Especiales** (sección 3.4, sin cambios de comportamiento).
+
+### Catálogo de productos
+- Alta/edición de productos: nombre, categoría (seleccionable o creable en el momento), precio de costo y precio de venta. **El código de barras nunca se escribe a mano** — se genera automáticamente al guardar (ver `docs/database.md`, "Generación de código EAN-8") y se muestra de solo lectura al editar.
+- Desactivación lógica (no se borra el producto ni su historial de ventas/movimientos).
+
+### Stock por sucursal
+- La columna **Stock** muestra `branch_stock.current_stock` para la sucursal seleccionada en el encabezado (`selectedBranchId`); cambia inmediatamente si el admin cambia de sucursal.
+- **Ajustar Stock**: diálogo admin-only que llama al RPC `adjust_branch_stock` (motivo: ajuste manual o reposición). Empleados no tienen esta acción disponible y el RPC la rechaza igualmente a nivel de base de datos si se invocara de otra forma.
+- **Historial de Movimientos**: diálogo de solo lectura por producto y sucursal, listando cada venta, reversión, ajuste o ingreso por importación con su delta aplicado y el saldo resultante.
+
+### Etiquetas de producto (`ProductLabel.tsx`)
+- Genera un gráfico de código de barras **EAN-8** (librería `jsbarcode`) junto con el código en texto, el nombre y el precio de venta del producto.
+- Impresión individual (acción por fila) o por lote (selección múltiple + "Imprimir seleccionados", o "Imprimir importados" tras correr una importación) — un solo trabajo de impresión con una etiqueta por producto, siguiendo el mismo patrón `window.open` + HTML autocontenido que `ReceiptModal.tsx` (no el bloque `@media print` sin uso de `globals.css`).
+- Sin punto de entrada bajo `/employee/*`: solo accesible desde el panel de administración.
+
+### Importación y exportación de catálogo (Excel)
+- **Importar** (`ProductImportDialog.tsx`): sube un `.xlsx` con columnas `ID` (opcional), `Nombre del Producto`, `Sección`, `Cantidad Ingresada`, `Precio Costo Unitario`, `Precio Venta Unitario`. Las columnas `Margen%`/`Totales` nunca se leen, ni siquiera si contienen un error de fórmula (`#VALUE!`).
+  - Una fila con `ID` vacío o que no coincide con ningún `barcode` existente en la tienda **siempre crea un producto nuevo** con un código EAN-8 recién generado — el valor del archivo nunca se adopta como código real.
+  - Una fila con `ID` coincidente actualiza nombre/categoría/precios del producto existente y **suma** la cantidad indicada al stock de la sucursal de destino (nunca la sobrescribe).
+  - Antes de confirmar, se muestra un resumen: productos a crear, a actualizar y categorías nuevas a crear; el commit real produce exactamente esos números.
+  - El commit corre en 4 pasos: crear categorías nuevas → crear productos nuevos (código generado por la base) → actualizar productos existentes → un RPC `adjust_branch_stock` por cada fila con cantidad. El último paso es individualmente falible por diseño (es aditivo, no se revierte el resto); el diálogo reporta qué filas fallaron.
+- **Exportar** (`ProductExportButton.tsx`): genera un `.xlsx` del catálogo activo con las mismas columnas y el mismo orden que la importación (usando la cantidad actual en la sucursal seleccionada), de forma que el archivo exportado se pueda volver a importar sin modificaciones y actualice cada fila sin crear duplicados.
+- Ambas acciones son exclusivas del panel de administración.
+
+---
+
+## 🏷️ 3.4. Reglas de Precio Especial por Cantidad
+
+Pestaña **Precios Especiales** de `StockView.tsx` — comportamiento sin cambios desde su versión original.
 
 ### Funcionamiento:
 - **Definición de Regla**: Asigna a un producto (ej. *"Remera"*) una cantidad clave (ej. `12`) con un precio especial paquete (ej. `$50,000`) frente al precio unitario individual (ej. `$5,000`).

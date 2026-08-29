@@ -131,28 +131,43 @@ numbers explicitly, and the documented recovery is to remove them from the file 
 retrying (or to correct with an adjustment). This is a real cost of the client-side model
 and is not hidden behind a retry button.
 
-### Decision: `exceljs`, dynamically imported
+### Decision: `read-excel-file` + `write-excel-file`, dynamically imported
 
-**Choice**: one dependency, `exceljs` (MIT, npm registry), `await import('exceljs')` inside
-the click handler.
-**Alternatives**: (a) npm `xlsx` — SheetJS stopped publishing to the npm registry after
-`0.18.5`; that frozen copy carries the prototype-pollution and ReDoS advisories whose fixes
-exist only in `≥0.19.3` / `≥0.20.2`; (b) SheetJS from `https://cdn.sheetjs.com/…​.tgz` —
-genuinely maintained, but a non-registry dependency spec breaks registry-mirrored/offline
-CI installs and weakens lockfile provenance; (c) `read-excel-file` + `write-excel-file` —
-browser-first and lighter, but two dependencies and a schema-driven read API that fights
-the "read whatever headers exist, then normalize" requirement.
-**Rationale**: export exists specifically to produce a file the importer accepts unmodified,
-so one library owning **both** directions removes an entire class of round-trip mismatch.
-No React/Next peer dependencies. Dynamic import keeps ~1 MB out of the `/admin` initial
-bundle.
-**Verification gap — must be closed at apply, not assumed here**: this session had no
-network tool, so registry recency was not confirmed. Preflight before any importer UI work:
-`npm view exceljs version time.modified`, `npm i -E exceljs`, `npm audit`, `npm run build`,
-plus a browser smoke test (ExcelJS has historically needed a `Buffer`/stream shim under some
-bundlers). If any step fails, fall back to (c). `jsbarcode` is likewise installed with
-`npm i -E jsbarcode` and the resolved version recorded; add `@types/jsbarcode` only if the
-build reports missing types.
+**Choice**: two dependencies, `read-excel-file` and `write-excel-file` (both MIT, npm
+registry, from the same author/project), `await import(...)` inside the click handlers.
+**Superseded choice, verified and rejected**: `exceljs` was this design's first pick, on
+the reasoning that one library owning both read and write removes a class of round-trip
+mismatch. The orchestrator verified registry recency after this design was written (the
+gap this section originally flagged as open) and found: `exceljs`'s last publish was
+`4.4.0` in **December 2024** (~20 months stale at the time of this change), and it pulls
+in Node-oriented dependencies (`archiver`, `unzipper`, `tmp`, `readable-stream`) that are
+exactly the kind known to need `Buffer`/`stream` polyfills under browser bundlers — the
+"historical shim issue" the original write-up already worried about, not a hypothetical.
+By contrast, `read-excel-file` (v9.3.10) and `write-excel-file` (v4.1.1) were both
+published within the last 3 months, are browser-first by design (no Node core-module
+deps), and together are lighter than `exceljs` alone.
+**Other alternatives** (unchanged from the original analysis): npm `xlsx` — SheetJS
+stopped publishing to the npm registry after `0.18.5`, and that frozen copy carries
+prototype-pollution/ReDoS advisories fixed only in `≥0.19.3`/`≥0.20.2`; the SheetJS CDN
+tarball — genuinely maintained, but a non-registry dependency spec breaks
+mirrored/offline CI and weakens lockfile provenance.
+**On the "schema-driven read fights read-then-normalize" objection**: this no longer
+applies here. The import format has exactly five fixed columns plus one optional `ID`,
+and this same change ships the **export** feature that generates the canonical file an
+admin re-uploads — so the app controls the exact header text of every file it produces.
+`read-excel-file`'s schema maps by header string, which is a *better* fit for a known,
+fixed column set than a generic "read whatever headers exist" pass: it validates cell
+types (numbers vs. text) for free, and a single normalization step (trim, lowercase,
+strip accents) on the parsed header row before matching against the schema keys handles
+the one real remaining risk — a hand-typed reference file with inconsistent casing/accents
+in its headers, which the proposal's own risk table calls out.
+**Verification performed** (not deferred to apply this time): `npm view exceljs version
+time.modified` → `4.4.0` / `2024-12-20`; `npm view read-excel-file version time.modified`
+→ `9.3.10` / `2026-08-10`; `npm view write-excel-file version time.modified` → `4.1.1` /
+`2026-06-08`. Still required before any importer UI work: `npm i -E read-excel-file
+write-excel-file`, `npm audit`, `npm run build`, and a browser smoke test. `jsbarcode` is
+likewise installed with `npm i -E jsbarcode` and the resolved version recorded; add
+`@types/jsbarcode` only if the build reports missing types.
 
 ### Decision: label printing follows `ReceiptModal.tsx`, not the `@media print` block
 
@@ -554,7 +569,8 @@ StockView / ProductImportDialog ─rpc adjust_branch_stock(branch, product, delt
    → role check → branch-belongs-to-store check → upsert+lock → update → ledger
 
 ── Import (client, 4 batched writes) ─────────────────────────────────────────
-.xlsx ─ExcelJS.read→ rows ─normalizeHeaders→ resolve ID against products.barcode
+.xlsx ─readSheet(file), no schema→ raw rows ─normalizeHeaders→ column-index map
+  ─map rows→ typed records ─resolve ID against products.barcode
   → PREVIEW {create: N, update: M, newCategories: K}  ─confirm→
      1 categories.insert([...])            (atomic)
      2 products.insert([...])              (atomic; barcode omitted → DEFAULT generates)
@@ -563,18 +579,31 @@ StockView / ProductImportDialog ─rpc adjust_branch_stock(branch, product, delt
 
 ── Export ─────────────────────────────────────────────────────────────────────
 products+categories(name)  ─┐
-branch_stock @ selectedBranch ┴─ merge client-side (default 0) → ExcelJS write → download
+branch_stock @ selectedBranch ┴─ merge client-side (default 0) → build sheetData
+  → writeExcelFile(sheetData).toFile('catalogo.xlsx')   (browser "Save As", no manual Blob wiring)
 ```
 
 ## Excel Contract
 
-Header normalization (import): `h.normalize('NFD').replace(/[̀-ͯ]/g,'')
-.trim().toLowerCase().replace(/\s+/g,' ')`. Required after normalization:
-`nombre del producto`, `seccion`, `cantidad ingresada`, `precio costo unitario`,
-`precio venta unitario`. Optional: `id`. Any missing required header **fails the whole
-preview** and displays the normalized header list actually found. `margen%` / `totales`
-are never read — not even defensively parsed — so the reference file's `#VALUE!` cell is
-structurally unreachable.
+**Import reads schemaless, then maps by normalized header — not `read-excel-file`'s
+built-in schema.** `read-excel-file`'s schema variant matches columns by an *exact*
+header string (`column: 'Nombre del Producto'`), which breaks the moment a real-world
+file has different accents, casing, or spacing in its headers — exactly the risk the
+proposal's own risk table names. Instead: `readSheet(file)` from `read-excel-file/browser`
+with no `schema` option returns the raw `(string | number | boolean | Date | null)[][]`
+grid, header row included. Row 1 is normalized —
+`h.normalize('NFD').replace(/[̀-ͯ]/g,'').trim().toLowerCase().replace(/\s+/g,' ')` — and
+matched by exact string equality against the five canonical keys below to build a
+column-index map; only that map, not the library, is schema-aware. Every cell in the
+raw grid is already a plain primitive (`read-excel-file` resolves formula results and
+never exposes a richText/formula wrapper), so no `cellText`-style unwrapping step exists —
+a formula cell simply arrives as its computed value or `null`, which is moot anyway since
+`margen%`/`totales` columns are never read at all, not even defensively, so the reference
+file's `#VALUE!` cell is structurally unreachable regardless of what it would parse to.
+
+Required after normalization: `nombre del producto`, `seccion`, `cantidad ingresada`,
+`precio costo unitario`, `precio venta unitario`. Optional: `id`. Any missing required
+header **fails the whole preview** and displays the normalized header list actually found.
 
 Column order for **both** directions (an exported file re-imports unmodified):
 
@@ -582,16 +611,23 @@ Column order for **both** directions (an exported file re-imports unmodified):
 |----|---------------------|---------|--------------------|-----------------------|-----------------------|
 
 ```ts
-// ExcelJS cell values are a union; every read column goes through this.
-type XlsxCell = null | string | number | boolean | Date
-  | { formula?: string; sharedFormula?: string; result?: unknown }
-  | { richText: { text: string }[] } | { error: string } | { hyperlink: string; text: string }
+// Cells from read-excel-file are already plain primitives — no formula/richText union.
+type SheetCell = string | number | boolean | Date | null
 
-function cellText(v: XlsxCell): string        // '' for null/error; result for formulas;
-                                              // concatenated richText; ISO for Date
-function parseMoney(s: string): number | null  // strips $ and NBSP; '1.234,56' -> 1234.56
-                                              // ('.' + ',' => '.' is thousands); ',' only => decimal
-function parseQty(s: string): number | null    // '' / 0 / non-numeric => null (no movement)
+function cellText(v: SheetCell): string        // '' for null; String(v) otherwise
+function parseMoney(v: SheetCell): number | null // numeric cell -> as-is; text cell strips
+                                                  // $/NBSP, '1.234,56' -> 1234.56 ('.'+','
+                                                  // => '.' is thousands), ',' only => decimal
+function parseQty(v: SheetCell): number | null   // '' / 0 / non-numeric => null (no movement)
+
+// Export: write-excel-file takes a plain 2D array, header row first — no column/type
+// config needed since every value here is already the right primitive type.
+const sheetData: SheetCell[][] = [
+  ['ID', 'Nombre del Producto', 'Sección', 'Cantidad Ingresada',
+   'Precio Costo Unitario', 'Precio Venta Unitario'],
+  ...rows.map(r => [r.barcode, r.name, r.categoryName, r.currentStock,
+                     r.purchasePrice, r.salePrice]),
+]
 ```
 
 Row resolution: `cellText(row.ID)` is matched against `products.barcode` **in this store**.
@@ -607,10 +643,10 @@ New product with a quantity → identity + one `import_ingress` movement (assump
 | `migration.sql` | Modify | Section 15 (15.1–15.10) + rollback block; 1–14 untouched |
 | `src/components/admin/StockView.tsx` | Modify | Tabs: **Productos** (CRUD without any barcode input, per-branch `Stock` column, adjust dialog, movements dialog, label actions, multi-select) + **Precios Especiales** (today's price-rule CRUD, moved unchanged). New props `branchId`, `branchName` |
 | `src/components/admin/ProductLabel.tsx` | Create | jsbarcode `EAN8` on an `<svg>` ref in `useEffect`; code text + name + price; single and batch print via the `ReceiptModal` `window.open` pattern |
-| `src/components/admin/ProductImportDialog.tsx` | Create | File input → ExcelJS parse → header normalize → resolve → preview counts → 4-phase commit → outcome report |
-| `src/components/admin/ProductExportButton.tsx` | Create | Two-query merge → ExcelJS write → `Blob` download, columns in import order |
+| `src/components/admin/ProductImportDialog.tsx` | Create | File input → `read-excel-file` parse (schema-driven, headers normalized before matching) → resolve → preview counts → 4-phase commit → outcome report |
+| `src/components/admin/ProductExportButton.tsx` | Create | Two-query merge → `write-excel-file` → `Blob` download, columns in import order |
 | `src/app/admin/page.tsx` | Modify | `:373` — pass `branchId={selectedBranchId}` and the resolved branch name into `StockView` |
-| `package.json` | Modify | `exceljs` + `jsbarcode`, both `-E` pinned, lockfile committed |
+| `package.json` | Modify | `read-excel-file` + `write-excel-file` + `jsbarcode`, all `-E` pinned, lockfile committed |
 | `src/components/employee/sales-form.tsx`, `SaleModal.tsx`, `SalesTable.tsx` | Unchanged | Branch is filled by the BEFORE INSERT trigger; the split-payment fix is already shipped |
 | `src/app/globals.css` | Unchanged | The unused `@media print` block stays as-is; labels use the `window.open` path |
 | `docs/database.md`, `docs/features.md` | Modify | New tables, Shape B usage, code generation, import/export flow |
@@ -707,10 +743,13 @@ resolve a `product_id`, so the triggers stay inert until the importer creates re
 adjustment + movements, (3) `ProductLabel` + printing, (4) import/export. Slice 1 is a
 prerequisite for 2–4; 3 and 4 are independent of each other.
 
-## Open Questions
+## Open Questions — one resolved, one remains
 
-- [ ] **`exceljs` registry recency and browser-bundle behaviour under Next 16 / Turbopack.**
-      Not verifiable in this session (no network tool). Closed by the preflight commands in
-      the library decision, before any importer UI work starts. Fallback is documented.
+- [x] **Excel library choice.** Resolved: `exceljs` (this design's original pick) was
+      verified and rejected in favor of `read-excel-file` + `write-excel-file` — see the
+      library decision section for the registry-recency evidence. `npm i -E
+      read-excel-file write-excel-file`, `npm audit`, and a `npm run build` bundle check
+      still run before importer UI work starts, but the library identity itself is no
+      longer an open question.
 - [ ] **`jsbarcode` bundled type declarations.** If `npm run build` reports missing types,
       add `@types/jsbarcode` as a devDependency; no design impact either way.

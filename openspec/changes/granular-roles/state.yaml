@@ -1,0 +1,77 @@
+change: granular-roles
+artifact_store: openspec
+session_preflight:
+  pace: interactive
+  delivery_strategy: ask-on-risk
+  review_budget_lines: 400
+phases:
+  explore:
+    status: done
+    artifact: exploration.md
+  propose:
+    status: done
+    artifact: proposal.md
+  spec:
+    status: pending
+  design:
+    status: pending
+  tasks:
+    status: pending
+  apply:
+    status: pending
+  verify:
+    status: pending
+  archive:
+    status: pending
+next_recommended: sdd-spec-and-design
+status: in_progress
+triggered_by: >
+  Queued from store-branches/state.yaml's next_change_queued block: user requested a
+  4-role model (admin, encargado de sucursal, caja, stock) while reviewing that
+  proposal. Two decisions pre-resolved there and carried forward, not re-litigated:
+  encargado has full control of their own branch including employee management;
+  caja/stock are separate, mutually exclusive roles (profiles.role admits exactly
+  one of admin | encargado | caja | stock).
+prior_decisions:
+  encargado_scope: >
+    Full control of their own branch: sales, stock, caja, and employee management
+    (invite/edit/deactivate) scoped to that branch - functionally an admin restricted
+    to one branch.
+  caja_stock_exclusivity: >
+    Separate, exclusive roles, not combinable permissions. profiles.role admits
+    exactly one of admin | encargado | caja | stock.
+decisions_resolved_by_user:
+  admin_self_invite: >
+    Admin may still invite/preload another admin profile - unchanged from current
+    behavior.
+  encargado_clients_access: >
+    Encargado gets full ClientManager access, same as admin today - no filtering
+    added since clients has no branch_id column anyway.
+  role_blind_rls_gap: >
+    CLOSE IT NOW, in this same change. clients/sales/categories/products/sale_items/
+    product_price_rules must gain real role-aware RLS predicates so caja/stock
+    exclusivity is a genuine database-enforced boundary, not just a UI convention.
+    This significantly expands scope versus the exploration's "defer as limitation"
+    option - sdd-propose/sdd-design must treat this as core scope, not a stretch goal.
+employee_legacy_recommendation: >
+  Exploration recommends keeping role='employee' as a valid, non-assignable legacy
+  value (maps to caja-equivalent access everywhere), rather than a forced migration
+  of the one real employee account. Admin can voluntarily reassign via a new role
+  dropdown in UserManager's edit flow. Not yet confirmed by user.
+adjust_branch_stock_followup: >
+  adjust_branch_stock() currently hard-rejects any role NOT IN ('admin','superadmin').
+  Exploration recommends this widening be a named follow-up task in this change's
+  task list, not an in-scope redesign of that already-shipped RPC.
+proposal_open_questions: >
+  proposal.md's "Proposal question round" raises 5 unresolved forks in the
+  table-by-table RLS matrix, each with an assumed default already written into
+  the proposal: (1) caja INSERT on clients; (2) caja UPDATE/DELETE on sales;
+  (3) caja sales visibility store-wide vs own-branch; (4) stock read access to
+  sales; (5) encargado write access to the store-wide product/price catalog.
+  Awaiting user confirmation before sdd-spec/sdd-design encode them.
+production_data_verified_by_orchestrator: >
+  Directly verified via execute_sql (2026-08-29): 3 stores, 4 profiles (2 admin,
+  1 employee, 1 superadmin), 4 branches, 26 products (confirms the earlier Excel
+  import test succeeded), 0 sales. Confirms the exploration's carried-forward
+  assumption was still accurate for profiles/stores/branches; products grew from 0
+  to 26 since the last check (expected, from stock-phase2 testing).

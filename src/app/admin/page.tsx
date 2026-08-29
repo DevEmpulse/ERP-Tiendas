@@ -133,6 +133,14 @@ export default function AdminPage() {
                 id,
                 name,
                 email
+              ),
+              sale_items (
+                id,
+                product_id,
+                product_name,
+                quantity,
+                unit_price,
+                subtotal
               )
             `)
             .order('created_at', { ascending: false }),

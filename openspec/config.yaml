@@ -1,0 +1,44 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4, Shadcn UI, Supabase (Postgres + Auth + RLS).
+  Architecture: Multi-tenant ERP. Every tenant-scoped table is isolated by
+    `store_id = public.get_current_user_store_id()` RLS policies backed by
+    SECURITY DEFINER helper functions (`get_current_user_store_id`, `get_current_user_role`).
+    Route authorization is centralized in `src/proxy.ts` by role (admin | employee | superadmin).
+  Schema convention: schema changes are appended to the checked-in root `migration.sql`
+    as new numbered sections (currently sections 1-12). This project does NOT use
+    tracked Supabase CLI migrations (`supabase/migrations/` does not exist and
+    `list_migrations` is empty).
+  Testing: No automated test suite is configured in this repository yet.
+  Style: TypeScript strict, functional React components, Shadcn UI primitives.
+
+rules:
+  proposal:
+    - Include a rollback plan for every schema change
+    - Verify every referenced column against the live schema, never from memory
+    - Surface open questions explicitly instead of deciding silently
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Every new tenant-scoped table MUST specify its RLS policies as requirements
+  design:
+    - Document architecture decisions with rationale and rejected alternatives
+    - Include forward and rollback SQL for schema changes
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Never leave the system in a broken intermediate state between tasks
+  apply:
+    guidelines:
+      - Follow existing code patterns
+      - Append schema changes as a new numbered section in root `migration.sql`
+      - Never delete or corrupt sales history
+    tdd: false
+    test_command: ""
+  verify:
+    test_command: ""
+    build_command: "npm run build"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

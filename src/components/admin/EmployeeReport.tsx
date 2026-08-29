@@ -74,7 +74,7 @@ export function EmployeeReport() {
         // 2. Fetch sales in that range
         const { data: sales, error: sError } = await supabase
           .from('sales')
-          .select('id, employee_id, total_amount, description, payment_method, created_at')
+          .select('id, employee_id, total_amount, description, payment_method, created_at, sale_items ( id, product_id, product_name, quantity, unit_price, subtotal )')
           .gte('created_at', start.toISOString())
           .lte('created_at', end.toISOString())
 

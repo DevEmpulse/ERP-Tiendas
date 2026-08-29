@@ -24,6 +24,7 @@ import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal
 
 interface PriceRule {
   id: string
+  product_id: string | null
   product_name: string
   quantity: number
   special_price: number
@@ -156,7 +157,7 @@ export function SaleModal({
     if (!isOpen || !storeId) return
     supabase
       .from('product_price_rules')
-      .select('id, product_name, quantity, special_price, unit_price')
+      .select('id, product_id, product_name, quantity, special_price, unit_price')
       .then(({ data }) => {
         if (data) setPriceRules(data.map((r: Record<string, unknown>) => ({
           ...r,
@@ -265,10 +266,18 @@ export function SaleModal({
   }
 
   // Get matching price rule for a line
-  const getMatchingRule = (detalle: string, cant: string | number): PriceRule | null => {
+  const getMatchingRule = (detalle: string, cant: string | number, productId?: string | null): PriceRule | null => {
     if (!detalle.trim()) return null
-    const lower = detalle.trim().toLowerCase()
     const qty = Number(cant) || 0
+
+    if (productId) {
+      const byProductId = priceRules.find(
+        r => r.product_id === productId && r.quantity === qty
+      )
+      if (byProductId) return byProductId
+    }
+
+    const lower = detalle.trim().toLowerCase()
     return priceRules.find(
       r => r.product_name.toLowerCase() === lower && r.quantity === qty
     ) || null
@@ -341,6 +350,30 @@ export function SaleModal({
 
       const description = serializeLines(lines)
 
+      // Resolve product_id for each line via a lookup-only, case-insensitive
+      // match against active products in this store. Unmatched names stay
+      // null — no product is created from this flow.
+      const { data: activeProducts } = await supabase
+        .from('products')
+        .select('id, name')
+        .eq('store_id', storeId)
+        .eq('is_active', true)
+
+      const productIdByName = new Map<string, string>(
+        (activeProducts ?? []).map((prod: { id: string, name: string }) => [prod.name.trim().toLowerCase(), prod.id])
+      )
+
+      const buildSaleItemsForSale = (saleId: string) =>
+        validLines.map(l => ({
+          store_id: storeId,
+          sale_id: saleId,
+          product_id: productIdByName.get(l.detalle.trim().toLowerCase()) ?? null,
+          product_name: l.detalle.trim(),
+          quantity: Number(l.cant) || 1,
+          unit_price: l.p_unit,
+          subtotal: l.importe
+        }))
+
       if (isCombined) {
         const txnRef = saleToEdit?.ref_code || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 4).toUpperCase() : 'TXN1')
         // Only preserve original created_at when editing; for new sales omit it so DB uses default now()
@@ -371,8 +404,16 @@ export function SaleModal({
           ...(originalDate ? { created_at: originalDate } : {}),
         })
 
-        const { error: insertError } = await supabase.from('sales').insert(salesToInsert)
+        const { data: insertedSales, error: insertError } = await supabase.from('sales').insert(salesToInsert).select('id')
         if (insertError) throw insertError
+
+        // One full set of sale_items per resulting sales row (mirrors how
+        // `description` is duplicated verbatim into every combined-payment row).
+        const saleItemsToInsert = (insertedSales ?? []).flatMap((s: { id: string }) => buildSaleItemsForSale(s.id))
+        if (saleItemsToInsert.length > 0) {
+          const { error: saleItemsError } = await supabase.from('sale_items').insert(saleItemsToInsert)
+          if (saleItemsError) throw saleItemsError
+        }
       } else {
         const saleData: Record<string, unknown> = {
           store_id: storeId, employee_id: employeeId, description,
@@ -381,8 +422,13 @@ export function SaleModal({
           client_id: clientId,
         }
         if (isEditMode && saleToEdit) saleData.created_at = saleToEdit.created_at
-        const { error: insertError } = await supabase.from('sales').insert(saleData)
+        const { data: insertedSale, error: insertError } = await supabase.from('sales').insert(saleData).select('id').single()
         if (insertError) throw insertError
+
+        if (insertedSale) {
+          const { error: saleItemsError } = await supabase.from('sale_items').insert(buildSaleItemsForSale(insertedSale.id))
+          if (saleItemsError) throw saleItemsError
+        }
       }
 
       if (isEditMode) {

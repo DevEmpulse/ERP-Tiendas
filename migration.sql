@@ -441,3 +441,92 @@ ALTER TABLE public.stores
   ADD COLUMN IF NOT EXISTS thermal_paper_width text NOT NULL DEFAULT '58mm'
   CHECK (thermal_paper_width IN ('58mm', '80mm'));
 
+-- 13. Product catalog, sale line items (Stock Phase 1)
+
+-- 13.1 Categories
+CREATE TABLE IF NOT EXISTS public.categories (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id uuid REFERENCES public.stores(id) ON DELETE CASCADE NOT NULL,
+  name text NOT NULL CHECK (btrim(name) <> ''),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS categories_store_id_idx ON public.categories (store_id);
+
+-- 13.2 Products
+CREATE TABLE IF NOT EXISTS public.products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id uuid REFERENCES public.stores(id) ON DELETE CASCADE NOT NULL,
+  category_id uuid REFERENCES public.categories(id) ON DELETE SET NULL,
+  name text NOT NULL CHECK (btrim(name) <> ''),
+  barcode text,
+  purchase_price numeric(10,2) NOT NULL DEFAULT 0 CHECK (purchase_price >= 0),
+  sale_price numeric(10,2) NOT NULL DEFAULT 0 CHECK (sale_price >= 0),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS products_store_id_idx ON public.products (store_id);
+CREATE INDEX IF NOT EXISTS products_category_id_idx ON public.products (category_id);
+CREATE UNIQUE INDEX IF NOT EXISTS products_store_barcode_uidx
+  ON public.products (store_id, barcode) WHERE barcode IS NOT NULL;
+
+-- 13.3 Sale line items
+CREATE TABLE IF NOT EXISTS public.sale_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id uuid REFERENCES public.stores(id) ON DELETE CASCADE NOT NULL,
+  sale_id uuid REFERENCES public.sales(id) ON DELETE CASCADE NOT NULL,
+  product_id uuid REFERENCES public.products(id) ON DELETE SET NULL,
+  product_name text NOT NULL,
+  quantity int NOT NULL CHECK (quantity > 0),
+  unit_price numeric(10,2) NOT NULL CHECK (unit_price >= 0),
+  subtotal numeric(10,2) NOT NULL CHECK (subtotal >= 0),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sale_items_sale_id_idx ON public.sale_items (sale_id);
+CREATE INDEX IF NOT EXISTS sale_items_product_id_idx ON public.sale_items (product_id);
+CREATE INDEX IF NOT EXISTS sale_items_store_id_idx ON public.sale_items (store_id);
+
+-- 13.4 Enable RLS
+ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sale_items ENABLE ROW LEVEL SECURITY;
+
+-- 13.5 RLS policies (verbatim pattern from sections 5 and 11)
+DROP POLICY IF EXISTS "Users can manage categories in their store" ON public.categories;
+CREATE POLICY "Users can manage categories in their store" ON public.categories
+  FOR ALL TO authenticated
+  USING (store_id = public.get_current_user_store_id())
+  WITH CHECK (store_id = public.get_current_user_store_id());
+
+DROP POLICY IF EXISTS "Users can manage products in their store" ON public.products;
+CREATE POLICY "Users can manage products in their store" ON public.products
+  FOR ALL TO authenticated
+  USING (store_id = public.get_current_user_store_id())
+  WITH CHECK (store_id = public.get_current_user_store_id());
+
+DROP POLICY IF EXISTS "Users can manage sale items in their store" ON public.sale_items;
+CREATE POLICY "Users can manage sale items in their store" ON public.sale_items
+  FOR ALL TO authenticated
+  USING (store_id = public.get_current_user_store_id())
+  WITH CHECK (store_id = public.get_current_user_store_id());
+
+-- 13.6 Price rules: nullable product_id ALONGSIDE product_name.
+-- Dropping product_name is EXPLICITLY OUT OF SCOPE for this phase.
+ALTER TABLE public.product_price_rules
+  ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES public.products(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS product_price_rules_product_id_idx
+  ON public.product_price_rules (product_id);
+
+-- 13.7 sales.description is currently NOT NULL. Make it nullable.
+ALTER TABLE public.sales ALTER COLUMN description DROP NOT NULL;
+
+-- ROLLBACK (do not run automatically) — reverse of section 13, top to bottom:
+-- ALTER TABLE public.sales ALTER COLUMN description SET NOT NULL;  -- only if no NULLs exist
+-- DROP INDEX IF EXISTS public.product_price_rules_product_id_idx;
+-- ALTER TABLE public.product_price_rules DROP COLUMN IF EXISTS product_id;
+-- DROP TABLE IF EXISTS public.sale_items CASCADE;
+-- DROP TABLE IF EXISTS public.products   CASCADE;
+-- DROP TABLE IF EXISTS public.categories CASCADE;
+

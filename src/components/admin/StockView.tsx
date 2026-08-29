@@ -29,6 +29,7 @@ import { useToast, Toaster } from '@/components/ui/toast'
 interface PriceRule {
   id: string
   store_id: string
+  product_id: string | null
   product_name: string
   quantity: number
   special_price: number

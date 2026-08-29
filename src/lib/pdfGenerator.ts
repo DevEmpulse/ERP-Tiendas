@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import { GroupedSale, parseSaleDescription } from './salesHelper'
+import { GroupedSale, getSaleLines } from './salesHelper'
 import type { ReceiptData } from '@/components/shared/ReceiptModal'
 
 // Chilean Currency Formatter (e.g., $15.500)
@@ -161,7 +161,7 @@ export function generateSalesReportPdf({
   // 4. TRANSACTIONS TABLE
   const tableBody = sales.map((sale) => {
     // Format Products list (Cantidad | Detalle | P.Unit | Importe)
-    const items = parseSaleDescription(sale.description, sale.total_amount)
+    const items = getSaleLines(sale)
     const productsFormatted = items
       .map((item) => `${item.cant}x ${item.detalle || 'Venta'} (${formatCurrency(item.p_unit)}) = ${formatCurrency(item.importe)}`)
       .join('\n')

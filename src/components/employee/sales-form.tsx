@@ -12,6 +12,7 @@ import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal
 
 interface PriceRule {
   id: string
+  product_id: string | null
   product_name: string
   quantity: number
   special_price: number
@@ -93,7 +94,7 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
     const supabase = createClient()
     supabase
       .from('product_price_rules')
-      .select('id, product_name, quantity, special_price, unit_price')
+      .select('id, product_id, product_name, quantity, special_price, unit_price')
       .then(({ data }) => {
         if (data) setPriceRules(data.map((r: Record<string, unknown>) => ({
           ...r,
@@ -105,9 +106,17 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
   }, [profile.store_id])
 
   // Get matching price rule for a product row
-  const getMatchingRule = (detail: string, quantity: string): PriceRule | null => {
+  const getMatchingRule = (detail: string, quantity: string, productId?: string | null): PriceRule | null => {
     if (!detail.trim()) return null
     const qty = parseInt(quantity || '0', 10)
+
+    if (productId) {
+      const byProductId = priceRules.find(
+        r => r.product_id === productId && r.quantity === qty
+      )
+      if (byProductId) return byProductId
+    }
+
     const lower = detail.trim().toLowerCase()
     return priceRules.find(
       r => r.product_name.toLowerCase() === lower && r.quantity === qty
@@ -304,6 +313,30 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
         })
         .join(', ')
 
+      // 3b. Resolve product_id for each product line via a lookup-only,
+      // case-insensitive match against active products in this store.
+      // Unmatched names stay null — no product is created from this flow.
+      const { data: activeProducts } = await supabase
+        .from('products')
+        .select('id, name')
+        .eq('store_id', storeId)
+        .eq('is_active', true)
+
+      const productIdByName = new Map<string, string>(
+        (activeProducts ?? []).map((prod: { id: string, name: string }) => [prod.name.trim().toLowerCase(), prod.id])
+      )
+
+      const buildSaleItemsForSale = (saleId: string) =>
+        validProducts.map(p => ({
+          store_id: storeId,
+          sale_id: saleId,
+          product_id: productIdByName.get(p.detail.trim().toLowerCase()) ?? null,
+          product_name: p.detail.trim(),
+          quantity: parseInt(p.quantity || '1', 10),
+          unit_price: parseInt(p.unitPrice || '0', 10),
+          subtotal: getProductImporte(p)
+        }))
+
       // 4. Insert Sale(s)
       if (isCombined) {
         // Generate a 4-character transaction identifier (e.g. #A4F9)
@@ -344,14 +377,26 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
         }
 
         // Insert all combined payment records in a single database query
-        const { error: saleError } = await supabase
+        const { data: insertedSales, error: saleError } = await supabase
           .from('sales')
           .insert(salesToInsert)
+          .select('id')
 
         if (saleError) throw saleError
+
+        // One full set of sale_items per resulting sales row, mirroring how
+        // compiledDesc is duplicated verbatim into every combined-payment row.
+        const saleItemsToInsert = (insertedSales ?? []).flatMap((s: { id: string }) => buildSaleItemsForSale(s.id))
+        if (saleItemsToInsert.length > 0) {
+          const { error: saleItemsError } = await supabase
+            .from('sale_items')
+            .insert(saleItemsToInsert)
+
+          if (saleItemsError) throw saleItemsError
+        }
       } else {
         // Single Payment flow
-        const { error: saleError } = await supabase
+        const { data: insertedSale, error: saleError } = await supabase
           .from('sales')
           .insert({
             store_id: storeId,
@@ -361,8 +406,18 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             total_amount: productsTotal,
             client_id: clientId
           })
+          .select('id')
+          .single()
 
         if (saleError) throw saleError
+
+        if (insertedSale) {
+          const { error: saleItemsError } = await supabase
+            .from('sale_items')
+            .insert(buildSaleItemsForSale(insertedSale.id))
+
+          if (saleItemsError) throw saleItemsError
+        }
       }
 
       // Build receipt data and open modal

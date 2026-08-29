@@ -11,6 +11,15 @@ export interface SaleItem {
   importe: number
 }
 
+export interface SaleItemRow {
+  id: string
+  product_id: string | null
+  product_name: string
+  quantity: number
+  unit_price: number | string
+  subtotal: number | string
+}
+
 export interface Sale {
   id: string
   created_at: string
@@ -21,6 +30,7 @@ export interface Sale {
   client_id?: string | null
   clients?: { id: string, phone: string | null } | null
   profiles?: SaleProfile | SaleProfile[] | null
+  sale_items?: SaleItemRow[] | null
 }
 
 export function parseSaleDescription(description: string, fallbackAmount: number | string): SaleItem[] {
@@ -69,6 +79,25 @@ export function parseSaleDescription(description: string, fallbackAmount: number
 }
 
 
+/**
+ * Prefers structured `sale_items` rows when present; falls back to the
+ * legacy `description` text parser for sales created before Stock Phase 1.
+ */
+export function getSaleLines(sale: Pick<Sale, 'description' | 'total_amount'> & {
+  sale_items?: SaleItemRow[] | null
+}): SaleItem[] {
+  if (sale.sale_items && sale.sale_items.length > 0) {
+    return sale.sale_items.map((item) => ({
+      cant: Number(item.quantity),
+      detalle: item.product_name,
+      p_unit: Number(item.unit_price),
+      importe: Number(item.subtotal)
+    }))
+  }
+
+  return parseSaleDescription(sale.description, sale.total_amount)
+}
+
 export interface PaymentBreakdown {
   id: string
   method: 'cash' | 'transfer' | 'card'
@@ -87,6 +116,7 @@ export interface GroupedSale {
   ref_code?: string
   client_id?: string | null
   client_phone?: string | null
+  sale_items?: SaleItemRow[] | null
 }
 
 /**
@@ -107,12 +137,12 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
     const amount = Number(sale.total_amount)
     
     // 1. Try to extract reference code (e.g. "Ref: #45KI")
-    const refMatch = sale.description.match(/Ref:\s*#([A-Za-z0-9\-]+)/i)
+    const refMatch = (sale.description ?? '').match(/Ref:\s*#([A-Za-z0-9\-]+)/i)
     const refCode = refMatch ? refMatch[1] : null
 
     // 2. Clean description to remove the payment method/reference suffix
     // E.g. "Campera Boxer Pelota de futbol (Efectivo - Ref: #45KI)" -> "Campera Boxer Pelota de futbol"
-    const cleanDesc = sale.description
+    const cleanDesc = (sale.description ?? '')
       .replace(/\s*\([^)]*Ref:\s*#[A-Za-z0-9\-]+\)/gi, '')
       .replace(/\s*\((cash|efectivo|transfer|transferencia|card|tarjeta)[^)]*\)/gi, '')
       .trim()
@@ -147,7 +177,8 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           is_combined: false,
           ref_code: refCode,
           client_id: sale.client_id || null,
-          client_phone: sale.clients?.phone || null
+          client_phone: sale.clients?.phone || null,
+          sale_items: sale.sale_items ?? null
         }
         grouped.push(newGroup)
         refMap.set(refCode, grouped.length - 1)
@@ -179,7 +210,8 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           total_amount: amount,
           is_combined: false,
           client_id: sale.client_id || null,
-          client_phone: sale.clients?.phone || null
+          client_phone: sale.clients?.phone || null,
+          sale_items: sale.sale_items ?? null
         }
         grouped.push(newGroup)
         fallbackMap.set(key, grouped.length - 1)

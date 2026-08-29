@@ -7,6 +7,7 @@ import {
   Tags,
   Settings,
   Building2,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -17,6 +18,7 @@ export type AdminSection =
   | 'staff'
   | 'clients'
   | 'stock'
+  | 'cash'
   | 'branches'
   | 'settings'
 
@@ -63,6 +65,12 @@ export const ADMIN_MENU_ITEMS: SidebarItem[] = [
     label: 'Stock / Precios',
     icon: Tags,
     description: 'Reglas de precio por cantidad',
+  },
+  {
+    id: 'cash',
+    label: 'Caja',
+    icon: Wallet,
+    description: 'Apertura, cierre y reconciliación de caja',
   },
   {
     id: 'branches',

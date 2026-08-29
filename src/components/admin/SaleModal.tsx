@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { useToast, Toaster } from '@/components/ui/toast'
 import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
 import { CATALOG_WRITE_ROLES } from '@/lib/roles'
+import { fetchOpenSession, type CashSession } from '@/lib/cashSession'
 
 interface PriceRule {
   id: string
@@ -146,6 +147,9 @@ export function SaleModal({
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null)
   const [showReceipt, setShowReceipt] = useState(false)
 
+  // Read-only attribution: the branch's currently open cash session, if any.
+  const [openCashSession, setOpenCashSession] = useState<CashSession | null>(null)
+
   const { toasts, toast, dismiss } = useToast()
 
   const supabase = createClient()
@@ -172,7 +176,20 @@ export function SaleModal({
         } as PriceRule)))
       })
   }, [isOpen, storeId, supabase])
-  
+
+  // Read-only attribution: refresh the branch's open session whenever the
+  // modal opens or the effective branch changes (D7 — no open/close control
+  // here, just a one-line indicator of where the sale will attach).
+  const attributionBranchId = saleToEdit?.branch_id ?? branchId
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    fetchOpenSession(supabase, attributionBranchId ?? null).then((session) => {
+      if (!cancelled) setOpenCashSession(session)
+    })
+    return () => { cancelled = true }
+  }, [isOpen, attributionBranchId, supabase])
+
   const [prevIsOpen, setPrevIsOpen] = useState(false)
   if (isOpen && !prevIsOpen) {
     setPrevIsOpen(true)
@@ -320,6 +337,11 @@ export function SaleModal({
     }
 
     try {
+      // Resolve the open session FRESH at submit time (never from cached
+      // component state) — every row of a combined payment shares this id.
+      const openSession = await fetchOpenSession(supabase, resolvedBranchId ?? null)
+      const cashSessionId = openSession?.id ?? null
+
       let clientId: string | null = null
 
       if (showClientPhone && clientPhone.trim()) {
@@ -347,12 +369,19 @@ export function SaleModal({
         }
       }
 
-      // Delete old records in edit mode
+      // Delete old records in edit mode. Abort the recreate entirely if the
+      // delete affected fewer rows than expected — RLS can silently block a
+      // DELETE (e.g. a closed-session sale, migration.sql §17.8) and 0
+      // affected rows looks identical to success. Recreating anyway would
+      // duplicate the sale and double-deduct stock.
       if (isEditMode && saleToEdit) {
         const ids = saleToEdit.payments.map(p => p.id)
         if (ids.length > 0) {
-          const { error: deleteError } = await deleteSaleGroup(supabase, ids)
+          const { deletedIds, error: deleteError } = await deleteSaleGroup(supabase, ids)
           if (deleteError) throw deleteError
+          if (deletedIds.length < ids.length) {
+            throw new Error('No se pudo editar esta venta: pertenece a una sesión de caja ya cerrada.')
+          }
         }
       }
 
@@ -394,6 +423,7 @@ export function SaleModal({
           description: `${description} (Efectivo - Ref: #${txnRef})`,
           payment_method: 'cash', total_amount: cashNum, client_id: clientId,
           branch_id: resolvedBranchId,
+          cash_session_id: cashSessionId,
           ...(originalDate ? { created_at: originalDate } : {}),
         })
 
@@ -403,6 +433,7 @@ export function SaleModal({
           description: `${description} (Transferencia - Ref: #${txnRef})`,
           payment_method: 'transfer', total_amount: transferNum, client_id: clientId,
           branch_id: resolvedBranchId,
+          cash_session_id: cashSessionId,
           ...(originalDate ? { created_at: originalDate } : {}),
         })
 
@@ -412,6 +443,7 @@ export function SaleModal({
           description: `${description} (Tarjeta - Ref: #${txnRef})`,
           payment_method: 'card', total_amount: cardNum, client_id: clientId,
           branch_id: resolvedBranchId,
+          cash_session_id: cashSessionId,
           ...(originalDate ? { created_at: originalDate } : {}),
         })
 
@@ -432,6 +464,7 @@ export function SaleModal({
           total_amount: parseInt(amount, 10),
           client_id: clientId,
           branch_id: resolvedBranchId,
+          cash_session_id: cashSessionId,
         }
         if (isEditMode && saleToEdit) saleData.created_at = saleToEdit.created_at
         const { data: insertedSale, error: insertError } = await supabase.from('sales').insert(saleData).select('id').single()
@@ -520,6 +553,15 @@ export function SaleModal({
 
         <form onSubmit={handleSubmit} className="flex flex-col max-h-[80vh] overflow-y-auto">
           <div className="px-6 py-5 space-y-5">
+
+            {/* Read-only cash session attribution (D7 — no open/close control here) */}
+            {attributionBranchId && (
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium -mb-1">
+                {openCashSession
+                  ? `Se registrará en la sesión de caja abierta desde ${new Date(openCashSession.opened_at).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}.`
+                  : 'No hay una sesión de caja abierta en esta sucursal: la venta quedará sin atribuir.'}
+              </p>
+            )}
 
             {/* Employee Selection */}
             <div className="space-y-1.5">

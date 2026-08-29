@@ -260,7 +260,7 @@ Orden de fases (no te lo saltees, están en orden de dependencia):
 4. Punto de Venta nuevo: refactor del formulario de ventas para buscar/escanear
    productos reales (código de barra con pistola), generar sale_items, con
    acceso rápido a reposición de stock desde el mismo buscador si el stock
-   está bajo o en cero, y atajos de teclado para agilizar el cobro.
+   está bajo o en cero, y atajos de teclado para agilizar el cobro. Cambiar el Dashboard por el POS por defecto. Cambiar el menu lateral izquierdo por el nuevo menu.
 5. Roles y permisos granulares: agregar can_use_pos y can_manage_stock a
    profiles (no cambiar el enum de role), actualizar middleware y el panel de
    gestión de personal para poder activar/desactivar estos permisos por

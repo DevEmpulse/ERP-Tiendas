@@ -1,0 +1,223 @@
+change: cash-register
+artifact_store: openspec
+session_preflight:
+  pace: interactive
+  delivery_strategy: ask-on-risk
+  review_budget_lines: 400
+phases:
+  explore:
+    status: done
+    artifact: exploration.md
+  propose:
+    status: done
+    artifact: proposal.md
+  spec:
+    status: done
+    artifacts:
+      - specs/cash-sessions/spec.md
+      - specs/cash-movements/spec.md
+      - specs/role-aware-data-access/spec.md
+    note: >
+      sale-line-items was listed as a Modified Capability in the proposal,
+      but its closed-session condition on sale_items is written entirely
+      inside the role-aware-data-access delta (Shape D already covers both
+      sales and sale_items, including the exact EXISTS subquery text). No
+      separate openspec/specs/sale-line-items delta was produced, per the
+      explicit 3-file output list for this phase.
+  design:
+    status: done
+    artifact: design.md
+    key_decisions:
+      d1_open_is_plain_insert: >
+        Opening a session is a plain RLS-gated INSERT, NOT an RPC. The partial
+        unique index (branch_id) WHERE status='open' is atomic on its own, and
+        opening writes no derived value. Closing IS an RPC.
+      d2_close_rpc_is_security_definer: >
+        DEVIATION from the proposal's "SECURITY INVOKER" wording, deliberate and
+        justified: INVOKER requires the caller to hold UPDATE on cash_sessions,
+        and RLS cannot restrict WHICH COLUMNS an UPDATE writes, so a caja could
+        PATCH expected_amount directly. Design uses no UPDATE grant at all +
+        REVOKE UPDATE, DELETE + one SECURITY DEFINER RPC with in-body
+        authorization, mirroring preload_employee (:1086) and the :606
+        branch-ownership check. Flag to user at apply time.
+      d3_condition_is_fail_closed: >
+        The closed-session clause is written EXISTS(... status='open'), not
+        NOT EXISTS(... status='closed'). RLS applies to policy subqueries, so
+        the NOT EXISTS form fails OPEN on invisibility. Logically identical
+        whenever the row is visible (status CHECK is open|closed).
+      d7_admin_ui_location: >
+        New 'cash' AdminSection sidebar entry scoped to the existing
+        selectedBranchId (admin/page.tsx:62,216,234), not the page header.
+        SaleModal gets only a read-only attribution indicator.
+      delete_sale_group_bug: >
+        salesHelper.deleteSaleGroup (:229-236) returns only { error } and an
+        RLS-blocked 0-row delete returns error:null. Once 17.8 lands, SaleModal
+        edit on a closed-session sale would delete nothing and re-insert =
+        DUPLICATED sale + double stock deduction. Must return deleted ids and
+        both call sites must abort on a short count.
+  tasks:
+    status: done
+    artifact: tasks.md
+    note: >
+      Design's Migration/Rollout named a 4-slice split; re-derived to 5 PRs from
+      actual per-file line estimates (~1185 total lines aggregate). PR2
+      (src/lib/cashSession.ts + roles.ts) split out of the named "writer
+      attribution + salesHelper/roles" slice because it has no dependency on
+      17.8 - only on schema (17.4/17.5) - keeping PR3 (17.8 + deleteSaleGroup
+      bug fix + writer attribution, ~270 lines) under budget while still
+      landing 17.8 and the bug fix atomically in the same PR, per hard
+      constraint. Review Workload Forecast: 400-line budget risk High
+      (aggregate), Chained PRs recommended Yes, Chain strategy pending
+      (delivery_strategy=ask-on-risk -> orchestrator must ask the user before
+      apply; recommended feature-branch-chain since PR3/PR4/PR5 each import
+      PR2's shared lib).
+  apply:
+    status: done
+    note: >
+      Applied 2026-08-29. sdd-apply settled cleanly this time (passed,
+      ~1697 changed lines - above the ~1185 forecast but covered by the
+      accepted size:exception). Code-reviewed migration.sql section 17 line
+      by line against design.md before applying: fail-closed EXISTS(...
+      status='open') clause confirmed correct on all non-admin arms, admin/
+      superadmin arms confirmed untouched, close_cash_session confirmed
+      SECURITY DEFINER with no client UPDATE grant, deleteSaleGroup fix
+      confirmed correct in both SaleModal.tsx and MySalesView.tsx (returns
+      deletedIds, both call sites abort on a short count with a clear
+      user-facing message). Applied section 17 to production after
+      re-confirming 0 sales. Ran a full real-impersonation lifecycle test
+      with a throwaway caja profile + the real admin: dup-open rejected
+      (23505), close RPC computed expected=1200.00/discrepancy=-10.00
+      exactly (1000 opening + 300 cash sale + 0 cash_in - 100 cash_out,
+      1190 counted), double-close rejected, caja blocked from
+      editing/deleting their own sale post-close (0 rows both ways), admin
+      successfully edited the same sale (exemption confirmed), the closed
+      session's frozen numbers did NOT change after that admin edit
+      (verified directly), cash_movements immutable even for admin
+      (permission denied via REVOKE). get_advisors: no new finding class.
+      All test data cleaned up, production back to 4 real profiles / 0
+      sales/sessions/movements.
+    remaining_manual_verification: >
+      Tasks 4.5 and 5.4 (open/close/cash-in-out UI walkthrough, and
+      session-history visibility per role) need a live authenticated
+      session per role - same limitation as every prior phase. Also not
+      independently tested: sale_items' own closed-session denial
+      specifically (only the parent sales row was verified), and the
+      deleteSaleGroup abort path exercised through the actual SaleModal/
+      MySalesView UI rather than direct SQL.
+  verify:
+    status: pending
+  archive:
+    status: pending
+next_recommended: "sdd-verify (after user completes manual UI verification per tasks.md, tasks 4.5/5.4)"
+review_workload_decision:
+  resolved_by: user
+  decision: >
+    size:exception accepted - single PR, not chained. Same choice as every
+    prior phase this session (store-branches, stock-phase2, granular-roles),
+    despite the review agent's recommendation to chain given PR3's hard
+    17.8+deleteSaleGroup-bugfix atomicity constraint. That constraint is
+    preserved regardless of PR shape - it's an ordering rule within the one
+    PR, not a cross-PR dependency now.
+  delivery_strategy_for_apply: size:exception
+status: in_progress
+capabilities:
+  new:
+    - cash-sessions
+    - cash-movements
+  modified:
+    - role-aware-data-access
+    - sale-line-items
+  note: >
+    role-aware-data-access is NOT in openspec/specs/ yet - its current text lives
+    in openspec/changes/granular-roles/specs/role-aware-data-access/spec.md
+    (granular-roles is applied but not archived). sdd-spec must read it there.
+proposal_round2_resolved:
+  q1_admin_exempt_from_post_close_block: >
+    RESOLVED by user, CHANGED from proposal's recommendation: admin/superadmin
+    ARE exempt from the closed-session UPDATE/DELETE block on sales/sale_items.
+    They keep unconditional access, consistent with them bypassing every other
+    branch predicate in this codebase. The block applies only to the
+    encargado/caja/employee arms. cash_movements remains the recommended (not
+    enforced-as-only) correction path for admin too.
+  a1_caja_session_history_visibility: >
+    Not challenged - stands as proposed. Caja reads their own branch's full
+    session history, read-only, via Shape B's branch fallthrough.
+  a2_shift_handoff: >
+    Not challenged - stands as proposed. Any authorized role at the branch
+    continues the branch's single open session; no hand-off protocol, no
+    forced close, no auto-close.
+production_data_reverified_by_orchestrator: >
+  0 sales, reconfirmed via execute_sql on 2026-08-29, immediately before
+  proposal work started.
+decisions_resolved_by_user:
+  fork_1_session_granularity: >
+    Per-branch single active session (Approach 1). One open cash_sessions row
+    per branch_id at a time, DB-enforced via partial unique index.
+  fork_2_enforcement_strictness: >
+    Do NOT block a cash sale when no session is open - it is created with
+    cash_session_id = NULL (unattributed), same pattern as an unmatched
+    product_id. No sale-blocking gate.
+  fork_3_admin_session_role: >
+    CHANGED from the exploration's assumption: admin can also open/close
+    cash sessions themselves for any branch (not just review store-wide
+    history). Encargado can open/close for their own branch. Caja can also
+    open/close for their own branch (implied - they are the primary operator).
+  fork_4_post_close_correction: >
+    Block the correction/void outright at the DB/RPC layer if the sale
+    belongs to a closed cash_session. A correction needed after close must go
+    through a separate, visible manual adjustment (cash_movements entry or
+    equivalent), never by editing the original sale. Protects the integrity
+    of an already-closed reconciliation.
+  fork_5_mid_shift_cash_movements: >
+    INCLUDE now: a minimal cash_movements ledger for manual cash-in/cash-out
+    during an open session (e.g. paying a supplier from the till, adding
+    change), mirroring stock_movements' append-only pattern.
+triggered_by: >
+  Phase 3 of the original multi-phase roadmap defined in
+  openspec/changes/archive/2026-08-28-stock-phase1-catalog/proposal.md.
+  P1 (catalog), P2 (stock), P5 (granular roles, pulled forward) are applied
+  to production. store-branches was an unplanned insertion before P2. Every
+  prior phase's proposal explicitly deferred "cash register / caja session
+  UI" to this phase.
+key_findings:
+  greenfield_confirmed: >
+    Grepped src/ and migration.sql for caja|turno|cash.?register|till|
+    session|fondo|arqueo: only hits are the 'caja' role name (8 files, from
+    granular-roles) and generic Supabase auth sessions, unrelated. No till/
+    register entity exists separate from branches.
+  rls_date_gap_finding: >
+    Shape D sales UPDATE/DELETE RLS for caja/employee has NO date restriction
+    - MySalesView.tsx's "today only" window is a UI-level filter, not a DB
+    guarantee. This becomes a real audit-integrity edge case once cash
+    sessions exist (a caja could technically void a sale from an
+    already-closed, reconciled session). Flagged as Fork 4, unresolved.
+  employee_report_not_reusable: >
+    src/components/admin/EmployeeReport.tsx is a per-employee-per-period
+    (day/month) aggregator, store-wide, no branch filter. Its shape does not
+    extend to per-session reporting; a new view is recommended instead of
+    modifying it.
+  production_data_last_verified: >
+    0 sales, confirmed by granular-roles/state.yaml via execute_sql on
+    2026-08-29. This exploration did not re-verify (no Supabase access from
+    this phase) - cheap for the orchestrator to redo before sdd-design.
+open_forks_for_propose:
+  fork_1_session_granularity: >
+    Per-branch single session vs per-employee concurrent sessions. Biggest
+    fork - decides the whole schema/RLS shape. Exploration recommends
+    per-branch (Approach 1).
+  fork_2_enforcement_strictness: >
+    Block cash sales with no open session, or allow unattributed cash sales?
+    Prevent concurrent sessions at the same branch (DB-enforced) or just
+    discourage in UI?
+  fork_3_admin_session_role: >
+    Does admin need to open/close sessions, or only review them, given admin
+    has no fixed branch_id but can create sales at any branch via SaleModal?
+  fork_4_post_close_correction: >
+    Correction/void of a sale belonging to an already-closed session - freeze
+    snapshot (accept stale-but-historically-accurate), DB-guard reject, or
+    flag closed session for review? Real audit-integrity edge case, not
+    hypothetical - RLS already permits the underlying action today.
+  fork_5_mid_shift_cash_movements: >
+    In or out of scope: manual cash-in/cash-out during an open session (e.g.
+    paying a supplier from the till)? Exploration recommends including as a
+    minimal ledger now since it is cheap to add and expensive to retrofit.

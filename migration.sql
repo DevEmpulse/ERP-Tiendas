@@ -1660,3 +1660,488 @@ ALTER TABLE public.profiles ADD CONSTRAINT profiles_employee_branch_check
 --   CHECK (role IN ('admin','employee','superadmin'));
 
 
+-- ==============================================================================
+-- 17. CASH REGISTER — per-branch caja sessions + manual cash ledger
+-- ==============================================================================
+
+-- 17.1 cash_sessions. One open session per branch is a DATABASE invariant.
+CREATE TABLE IF NOT EXISTS public.cash_sessions (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id        uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  branch_id       uuid NOT NULL,
+  opened_by       uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  opened_at       timestamptz NOT NULL DEFAULT now(),
+  opening_amount  numeric(10,2) NOT NULL DEFAULT 0 CHECK (opening_amount >= 0),
+  status          text NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  closed_by       uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  closed_at       timestamptz,
+  counted_amount  numeric(10,2) CHECK (counted_amount >= 0),
+  expected_amount numeric(10,2),
+  discrepancy     numeric(10,2),
+  FOREIGN KEY (store_id, branch_id) REFERENCES public.branches (store_id, id) ON DELETE CASCADE,
+  CONSTRAINT cash_sessions_closed_shape CHECK (
+    (status = 'open'   AND closed_at IS NULL AND counted_amount IS NULL
+                       AND expected_amount IS NULL AND discrepancy IS NULL)
+ OR (status = 'closed' AND closed_at IS NOT NULL AND counted_amount IS NOT NULL
+                       AND expected_amount IS NOT NULL AND discrepancy IS NOT NULL)
+  )
+);
+
+-- THE invariant: at most one open session per branch.
+CREATE UNIQUE INDEX IF NOT EXISTS cash_sessions_one_open_per_branch_idx
+  ON public.cash_sessions (branch_id) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS cash_sessions_store_id_idx ON public.cash_sessions (store_id);
+CREATE INDEX IF NOT EXISTS cash_sessions_branch_opened_idx
+  ON public.cash_sessions (branch_id, opened_at DESC);
+
+-- Coherence key (section 15.1 pattern, :737-743): a sale's session is always
+-- at the sale's own branch, so the RLS subquery in 17.8 can never miss it.
+ALTER TABLE public.cash_sessions
+  DROP CONSTRAINT IF EXISTS cash_sessions_branch_id_key;
+ALTER TABLE public.cash_sessions
+  ADD CONSTRAINT cash_sessions_branch_id_key UNIQUE (branch_id, id);
+
+-- 17.2 cash_movements. Manual entries ONLY — sale-driven cash is derived
+-- (join sales WHERE payment_method='cash'), never duplicated here.
+CREATE TABLE IF NOT EXISTS public.cash_movements (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  cash_session_id uuid NOT NULL REFERENCES public.cash_sessions(id) ON DELETE CASCADE,
+  store_id        uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  branch_id       uuid NOT NULL,
+  type            text NOT NULL CHECK (type IN ('cash_in','cash_out')),
+  amount          numeric(10,2) NOT NULL CHECK (amount > 0),
+  reason          text NOT NULL CHECK (btrim(reason) <> ''),
+  note            text,
+  created_by      uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (store_id, branch_id) REFERENCES public.branches (store_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS cash_movements_session_idx
+  ON public.cash_movements (cash_session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS cash_movements_store_id_idx ON public.cash_movements (store_id);
+
+-- 17.3 RLS — Shape B verbatim (:851-866), split across SELECT/INSERT exactly like
+-- stock_movements (:868-890). No UPDATE or DELETE policy exists on either table,
+-- so RLS default-denies both verbs; 17.7 revokes the privilege as well.
+ALTER TABLE public.cash_sessions  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cash_movements ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can read cash sessions in their branch" ON public.cash_sessions;
+CREATE POLICY "Users can read cash sessions in their branch" ON public.cash_sessions
+  FOR SELECT TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+-- Opening a session is a plain INSERT (decision D1). opened_by is pinned to the
+-- caller so an open can never be attributed to someone else.
+DROP POLICY IF EXISTS "Operators can open cash sessions in their branch" ON public.cash_sessions;
+CREATE POLICY "Operators can open cash sessions in their branch" ON public.cash_sessions
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND status = 'open'
+    AND opened_by = (select auth.uid())
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR (
+        public.get_current_user_role() IN ('encargado','caja','employee')
+        AND branch_id = public.get_current_user_branch_id()
+      )
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can read cash movements in their branch" ON public.cash_movements;
+CREATE POLICY "Users can read cash movements in their branch" ON public.cash_movements
+  FOR SELECT TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can insert cash movements in their branch" ON public.cash_movements;
+CREATE POLICY "Users can insert cash movements in their branch" ON public.cash_movements
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND created_by = (select auth.uid())
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+-- 17.4 sales.cash_session_id — nullable, additive. A sale made with no open
+-- session lands NULL, exactly like sale_items.product_id for an unmatched name.
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cash_session_id uuid;
+CREATE INDEX IF NOT EXISTS sales_cash_session_id_idx
+  ON public.sales (cash_session_id) WHERE cash_session_id IS NOT NULL;
+
+ALTER TABLE public.sales DROP CONSTRAINT IF EXISTS sales_cash_session_branch_fkey;
+ALTER TABLE public.sales ADD CONSTRAINT sales_cash_session_branch_fkey
+  FOREIGN KEY (branch_id, cash_session_id)
+  REFERENCES public.cash_sessions (branch_id, id) ON DELETE SET NULL;
+
+-- 17.5 Stale-attach guard (D5). Never blocks a sale: an id that is missing,
+-- foreign, or already closed degrades to NULL (unattributed).
+CREATE OR REPLACE FUNCTION public.enforce_sale_cash_session()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public
+AS $$
+BEGIN
+  IF NEW.cash_session_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM public.cash_sessions cs
+       WHERE cs.id = NEW.cash_session_id
+         AND cs.status = 'open'
+         AND cs.branch_id IS NOT DISTINCT FROM NEW.branch_id
+    ) THEN
+      NEW.cash_session_id := NULL;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_sale_set_cash_session ON public.sales;
+CREATE TRIGGER on_sale_set_cash_session
+  BEFORE INSERT ON public.sales
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_sale_cash_session();
+
+-- 17.6 Close = the ONLY mutation path for cash_sessions (D1, D2). SECURITY
+-- DEFINER because the caller holds no UPDATE grant, so expected_amount and
+-- discrepancy cannot be forged from the client. Authorization is done in the
+-- body, mirroring preload_employee (:1086) / the :606 branch-ownership check.
+DROP FUNCTION IF EXISTS public.close_cash_session(uuid, numeric);
+CREATE FUNCTION public.close_cash_session(
+  p_session_id     uuid,
+  p_counted_amount numeric
+)
+RETURNS public.cash_sessions
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  v_role        text := public.get_current_user_role();
+  v_store_id    uuid := public.get_current_user_store_id();
+  v_branch_id   uuid := public.get_current_user_branch_id();
+  v_session     public.cash_sessions;
+  v_cash_sales  numeric(10,2);
+  v_cash_in     numeric(10,2);
+  v_cash_out    numeric(10,2);
+  v_expected    numeric(10,2);
+BEGIN
+  IF p_counted_amount IS NULL OR p_counted_amount < 0 THEN
+    RAISE EXCEPTION 'A non-negative counted amount is required';
+  END IF;
+
+  -- FOR UPDATE serializes two concurrent closes of the same session.
+  SELECT * INTO v_session FROM public.cash_sessions
+   WHERE id = p_session_id FOR UPDATE;
+
+  -- Same message for "absent" and "other tenant" so existence never leaks.
+  IF v_session.id IS NULL OR v_session.store_id IS DISTINCT FROM v_store_id THEN
+    RAISE EXCEPTION 'Cash session not found';
+  END IF;
+
+  IF v_role IN ('admin','superadmin') THEN
+    NULL;  -- store-wide, any branch of their store
+  ELSIF v_role IN ('encargado','caja','employee')
+        AND v_session.branch_id = v_branch_id THEN
+    NULL;
+  ELSE
+    RAISE EXCEPTION 'Not authorized to close this cash session';
+  END IF;
+
+  IF v_session.status <> 'open' THEN
+    RAISE EXCEPTION 'Cash session is already closed';
+  END IF;
+
+  -- sales.total_amount is numeric(10,2); combined payments are split one row
+  -- per method (sales-form.tsx:344-402), so this sum is exact — there is no
+  -- partial-cash amount to apportion.
+  SELECT COALESCE(SUM(s.total_amount), 0) INTO v_cash_sales
+    FROM public.sales s
+   WHERE s.cash_session_id = p_session_id
+     AND s.payment_method = 'cash';
+
+  SELECT COALESCE(SUM(m.amount) FILTER (WHERE m.type = 'cash_in'),  0),
+         COALESCE(SUM(m.amount) FILTER (WHERE m.type = 'cash_out'), 0)
+    INTO v_cash_in, v_cash_out
+    FROM public.cash_movements m
+   WHERE m.cash_session_id = p_session_id;
+
+  v_expected := v_session.opening_amount + v_cash_sales + v_cash_in - v_cash_out;
+
+  UPDATE public.cash_sessions
+     SET status          = 'closed',
+         closed_by       = auth.uid(),
+         closed_at       = now(),
+         counted_amount  = p_counted_amount,
+         expected_amount = v_expected,
+         discrepancy     = p_counted_amount - v_expected
+   WHERE id = p_session_id
+  RETURNING * INTO v_session;
+
+  RETURN v_session;
+END;
+$$;
+
+-- 17.7 Grants. Append-only from the client on both tables; close is RPC-only.
+GRANT SELECT, INSERT  ON public.cash_sessions  TO authenticated;
+GRANT SELECT, INSERT  ON public.cash_movements TO authenticated;
+REVOKE UPDATE, DELETE ON public.cash_sessions  FROM authenticated, anon;
+REVOKE UPDATE, DELETE ON public.cash_movements FROM authenticated, anon;
+REVOKE EXECUTE ON FUNCTION public.close_cash_session(uuid, numeric) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.close_cash_session(uuid, numeric) TO authenticated;
+
+-- 17.8 Post-close immutability. Delta vs 16.5 is ONE clause, on the non-admin
+-- arms only. admin/superadmin stay unconditional (resolved Q1). Every existing
+-- condition below is preserved byte-for-byte from :1440-1477 / :1504-1547.
+DROP POLICY IF EXISTS "Sellers can update sales in their scope" ON public.sales;
+CREATE POLICY "Sellers can update sales in their scope" ON public.sales
+  FOR UPDATE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id()
+          AND (cash_session_id IS NULL
+               OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                           WHERE cs.id = sales.cash_session_id
+                             AND cs.status = 'open')))
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND employee_id = (select auth.uid())
+          AND (cash_session_id IS NULL
+               OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                           WHERE cs.id = sales.cash_session_id
+                             AND cs.status = 'open')))
+    )
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id()
+          AND (cash_session_id IS NULL
+               OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                           WHERE cs.id = sales.cash_session_id
+                             AND cs.status = 'open')))
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND employee_id = (select auth.uid())
+          AND (cash_session_id IS NULL
+               OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                           WHERE cs.id = sales.cash_session_id
+                             AND cs.status = 'open')))
+    )
+  );
+
+DROP POLICY IF EXISTS "Sellers can delete sales in their scope" ON public.sales;
+CREATE POLICY "Sellers can delete sales in their scope" ON public.sales
+  FOR DELETE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id()
+          AND (cash_session_id IS NULL
+               OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                           WHERE cs.id = sales.cash_session_id
+                             AND cs.status = 'open')))
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND employee_id = (select auth.uid())
+          AND (cash_session_id IS NULL
+               OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                           WHERE cs.id = sales.cash_session_id
+                             AND cs.status = 'open')))
+    )
+  );
+
+-- sale_items reaches the session through its EXISTS join to sales, which the
+-- caja/employee arm already carries; the encargado arm gains that same join.
+DROP POLICY IF EXISTS "Sellers can update sale items in their scope" ON public.sale_items;
+CREATE POLICY "Sellers can update sale items in their scope" ON public.sale_items
+  FOR UPDATE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id()
+          AND NOT EXISTS (SELECT 1 FROM public.sales s
+                           JOIN public.cash_sessions cs ON cs.id = s.cash_session_id
+                          WHERE s.id = sale_items.sale_id
+                            AND cs.status = 'closed'))
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND EXISTS (SELECT 1 FROM public.sales s
+                       WHERE s.id = sale_items.sale_id
+                         AND s.employee_id = (select auth.uid())
+                         AND (s.cash_session_id IS NULL
+                              OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                                          WHERE cs.id = s.cash_session_id
+                                            AND cs.status = 'open'))))
+    )
+  )
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id()
+          AND NOT EXISTS (SELECT 1 FROM public.sales s
+                           JOIN public.cash_sessions cs ON cs.id = s.cash_session_id
+                          WHERE s.id = sale_items.sale_id
+                            AND cs.status = 'closed'))
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND EXISTS (SELECT 1 FROM public.sales s
+                       WHERE s.id = sale_items.sale_id
+                         AND s.employee_id = (select auth.uid())
+                         AND (s.cash_session_id IS NULL
+                              OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                                          WHERE cs.id = s.cash_session_id
+                                            AND cs.status = 'open'))))
+    )
+  );
+
+DROP POLICY IF EXISTS "Sellers can delete sale items in their scope" ON public.sale_items;
+CREATE POLICY "Sellers can delete sale items in their scope" ON public.sale_items
+  FOR DELETE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin','superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id()
+          AND NOT EXISTS (SELECT 1 FROM public.sales s
+                           JOIN public.cash_sessions cs ON cs.id = s.cash_session_id
+                          WHERE s.id = sale_items.sale_id
+                            AND cs.status = 'closed'))
+      OR (public.get_current_user_role() IN ('caja','employee')
+          AND branch_id = public.get_current_user_branch_id()
+          AND EXISTS (SELECT 1 FROM public.sales s
+                       WHERE s.id = sale_items.sale_id
+                         AND s.employee_id = (select auth.uid())
+                         AND (s.cash_session_id IS NULL
+                              OR EXISTS (SELECT 1 FROM public.cash_sessions cs
+                                          WHERE cs.id = s.cash_session_id
+                                            AND cs.status = 'open'))))
+    )
+  );
+
+
+-- 17.9 ROLLBACK (do not run automatically) — reverse of section 17, bottom to top:
+-- DROP POLICY IF EXISTS "Sellers can update sales in their scope" ON public.sales;
+-- CREATE POLICY "Sellers can update sales in their scope" ON public.sales
+--   FOR UPDATE TO authenticated
+--   USING (
+--     store_id = public.get_current_user_store_id()
+--     AND (
+--       public.get_current_user_role() IN ('admin','superadmin')
+--       OR (public.get_current_user_role() = 'encargado'
+--           AND branch_id = public.get_current_user_branch_id())
+--       OR (public.get_current_user_role() IN ('caja','employee')
+--           AND branch_id = public.get_current_user_branch_id()
+--           AND employee_id = (select auth.uid()))
+--     )
+--   )
+--   WITH CHECK (
+--     store_id = public.get_current_user_store_id()
+--     AND (
+--       public.get_current_user_role() IN ('admin','superadmin')
+--       OR (public.get_current_user_role() = 'encargado'
+--           AND branch_id = public.get_current_user_branch_id())
+--       OR (public.get_current_user_role() IN ('caja','employee')
+--           AND branch_id = public.get_current_user_branch_id()
+--           AND employee_id = (select auth.uid()))
+--     )
+--   );
+--
+-- DROP POLICY IF EXISTS "Sellers can delete sales in their scope" ON public.sales;
+-- CREATE POLICY "Sellers can delete sales in their scope" ON public.sales
+--   FOR DELETE TO authenticated
+--   USING (
+--     store_id = public.get_current_user_store_id()
+--     AND (
+--       public.get_current_user_role() IN ('admin','superadmin')
+--       OR (public.get_current_user_role() = 'encargado'
+--           AND branch_id = public.get_current_user_branch_id())
+--       OR (public.get_current_user_role() IN ('caja','employee')
+--           AND branch_id = public.get_current_user_branch_id()
+--           AND employee_id = (select auth.uid()))
+--     )
+--   );
+--
+-- DROP POLICY IF EXISTS "Sellers can update sale items in their scope" ON public.sale_items;
+-- CREATE POLICY "Sellers can update sale items in their scope" ON public.sale_items
+--   FOR UPDATE TO authenticated
+--   USING (
+--     store_id = public.get_current_user_store_id()
+--     AND (
+--       public.get_current_user_role() IN ('admin','superadmin')
+--       OR (public.get_current_user_role() = 'encargado'
+--           AND branch_id = public.get_current_user_branch_id())
+--       OR (public.get_current_user_role() IN ('caja','employee')
+--           AND branch_id = public.get_current_user_branch_id()
+--           AND EXISTS (SELECT 1 FROM public.sales s
+--                        WHERE s.id = sale_items.sale_id
+--                          AND s.employee_id = (select auth.uid())))
+--     )
+--   )
+--   WITH CHECK (
+--     store_id = public.get_current_user_store_id()
+--     AND (
+--       public.get_current_user_role() IN ('admin','superadmin')
+--       OR (public.get_current_user_role() = 'encargado'
+--           AND branch_id = public.get_current_user_branch_id())
+--       OR (public.get_current_user_role() IN ('caja','employee')
+--           AND branch_id = public.get_current_user_branch_id()
+--           AND EXISTS (SELECT 1 FROM public.sales s
+--                        WHERE s.id = sale_items.sale_id
+--                          AND s.employee_id = (select auth.uid())))
+--     )
+--   );
+--
+-- DROP POLICY IF EXISTS "Sellers can delete sale items in their scope" ON public.sale_items;
+-- CREATE POLICY "Sellers can delete sale items in their scope" ON public.sale_items
+--   FOR DELETE TO authenticated
+--   USING (
+--     store_id = public.get_current_user_store_id()
+--     AND (
+--       public.get_current_user_role() IN ('admin','superadmin')
+--       OR (public.get_current_user_role() = 'encargado'
+--           AND branch_id = public.get_current_user_branch_id())
+--       OR (public.get_current_user_role() IN ('caja','employee')
+--           AND branch_id = public.get_current_user_branch_id()
+--           AND EXISTS (SELECT 1 FROM public.sales s
+--                        WHERE s.id = sale_items.sale_id
+--                          AND s.employee_id = (select auth.uid())))
+--     )
+--   );
+--
+-- DROP FUNCTION IF EXISTS public.close_cash_session(uuid, numeric);
+--
+-- DROP TRIGGER IF EXISTS on_sale_set_cash_session ON public.sales;
+-- DROP FUNCTION IF EXISTS public.enforce_sale_cash_session();
+--
+-- ALTER TABLE public.sales DROP CONSTRAINT IF EXISTS sales_cash_session_branch_fkey;
+-- DROP INDEX IF EXISTS public.sales_cash_session_id_idx;
+-- ALTER TABLE public.sales DROP COLUMN IF EXISTS cash_session_id;
+--
+-- DROP TABLE IF EXISTS public.cash_movements CASCADE;
+-- DROP TABLE IF EXISTS public.cash_sessions CASCADE;
+
+

@@ -10,6 +10,7 @@ import { Coins, ArrowLeftRight, CreditCard, Phone, Loader2, CheckCircle2, AlertC
 import { cn } from '@/lib/utils'
 import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
 import { CATALOG_WRITE_ROLES } from '@/lib/roles'
+import { fetchOpenSession } from '@/lib/cashSession'
 
 interface PriceRule {
   id: string
@@ -329,6 +330,13 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
         (activeProducts ?? []).map((prod: { id: string, name: string }) => [prod.name.trim().toLowerCase(), prod.id])
       )
 
+      // 3c. Resolve the branch's currently-open cash session FRESH at submit
+      // time (never from cached component state). `null` is expected and
+      // never blocks the sale — every row of a combined payment shares the
+      // one resolved id.
+      const openSession = await fetchOpenSession(supabase, branchId)
+      const cashSessionId = openSession?.id ?? null
+
       const buildSaleItemsForSale = (saleId: string) =>
         validProducts.map(p => ({
           store_id: storeId,
@@ -354,7 +362,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             payment_method: 'cash',
             total_amount: cashNum,
             client_id: clientId,
-            branch_id: branchId
+            branch_id: branchId,
+            cash_session_id: cashSessionId
           })
         }
 
@@ -366,7 +375,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             payment_method: 'transfer',
             total_amount: transferNum,
             client_id: clientId,
-            branch_id: branchId
+            branch_id: branchId,
+            cash_session_id: cashSessionId
           })
         }
 
@@ -378,7 +388,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             payment_method: 'card',
             total_amount: cardNum,
             client_id: clientId,
-            branch_id: branchId
+            branch_id: branchId,
+            cash_session_id: cashSessionId
           })
         }
 
@@ -411,7 +422,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             payment_method: paymentMethod,
             total_amount: productsTotal,
             client_id: clientId,
-            branch_id: branchId
+            branch_id: branchId,
+            cash_session_id: cashSessionId
           })
           .select('id')
           .single()

@@ -6,8 +6,10 @@ import { createClient } from '@/utils/supabase/client'
 import SalesForm from './sales-form'
 import { MySalesView } from './MySalesView'
 import { StockAdjustmentView } from './StockAdjustmentView'
+import { CashSessionPanel } from '@/components/shared/CashSessionPanel'
+import { CashSessionHistoryView } from '@/components/shared/CashSessionHistoryView'
 import { Button } from '@/components/ui/button'
-import { LogOut, Store, PlusCircle, Receipt, Boxes } from 'lucide-react'
+import { LogOut, Store, PlusCircle, Receipt, Boxes, Wallet } from 'lucide-react'
 import { STOCK_ROLES, type Role } from '@/lib/roles'
 
 interface Profile {
@@ -34,7 +36,7 @@ export default function EmployeeDashboard({
 }: EmployeeDashboardProps) {
   const router = useRouter()
   const [logoutLoading, setLogoutLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState<'form' | 'my_sales'>('form')
+  const [activeTab, setActiveTab] = useState<'form' | 'my_sales' | 'cash'>('form')
 
   const handleLogout = async () => {
     setLogoutLoading(true)
@@ -93,7 +95,19 @@ export default function EmployeeDashboard({
           </main>
         ) : (
           <div className="space-y-4">
-            {/* Two-tab toggle for POS roles */}
+            {/* Cash session is context, not a tab — shown above the strip */}
+            <div className="px-2">
+              <CashSessionPanel
+                storeId={profile.store_id}
+                branchId={profile.branch_id}
+                branchName={branchName}
+                role={profile.role}
+                userId={profile.id}
+                userBranchId={profile.branch_id}
+              />
+            </div>
+
+            {/* Three-tab toggle for POS roles */}
             <div className="flex rounded-xl bg-zinc-100 dark:bg-zinc-800/70 p-1 border border-zinc-200/80 dark:border-zinc-700 mx-2">
               <button
                 type="button"
@@ -119,13 +133,27 @@ export default function EmployeeDashboard({
                 <Receipt className="h-3.5 w-3.5" />
                 Mis ventas de hoy
               </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('cash')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'cash'
+                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-zinc-50'
+                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Wallet className="h-3.5 w-3.5" />
+                Caja
+              </button>
             </div>
 
             <main className="px-2">
               {activeTab === 'form' ? (
                 <SalesForm profile={profile} storeName={storeName} paperWidth={paperWidth} />
-              ) : (
+              ) : activeTab === 'my_sales' ? (
                 <MySalesView profile={profile} storeName={storeName} paperWidth={paperWidth} />
+              ) : (
+                <CashSessionHistoryView storeId={profile.store_id} branchId={profile.branch_id} />
               )}
             </main>
           </div>

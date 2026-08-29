@@ -29,6 +29,7 @@ export interface Sale {
   employee_id: string
   client_id?: string | null
   branch_id?: string | null
+  cash_session_id?: string | null
   clients?: { id: string, phone: string | null } | null
   profiles?: SaleProfile | SaleProfile[] | null
   sale_items?: SaleItemRow[] | null
@@ -118,6 +119,7 @@ export interface GroupedSale {
   client_id?: string | null
   client_phone?: string | null
   branch_id?: string | null
+  cash_session_id?: string | null
   sale_items?: SaleItemRow[] | null
 }
 
@@ -181,6 +183,7 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           client_id: sale.client_id || null,
           client_phone: sale.clients?.phone || null,
           branch_id: sale.branch_id ?? null,
+          cash_session_id: sale.cash_session_id ?? null,
           sale_items: sale.sale_items ?? null
         }
         grouped.push(newGroup)
@@ -215,6 +218,7 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           client_id: sale.client_id || null,
           client_phone: sale.clients?.phone || null,
           branch_id: sale.branch_id ?? null,
+          cash_session_id: sale.cash_session_id ?? null,
           sale_items: sale.sale_items ?? null
         }
         grouped.push(newGroup)
@@ -226,12 +230,23 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
   return grouped
 }
 
+/**
+ * Deletes the given sale ids and returns the ids the database actually
+ * deleted. RLS can silently block a DELETE (0 rows affected, `error: null`)
+ * — for example once migration.sql §17.8's closed-session policy denies a
+ * caja editing/voiding a sale whose session has since closed. Callers MUST
+ * compare `deletedIds.length` against the expected count and abort (no
+ * insert, no recreate) if it comes up short, to avoid a duplicated sale and
+ * a double stock deduction on the edit-mode delete-then-recreate flow.
+ */
 export async function deleteSaleGroup(
   supabase: any,
   ids: string[]
-): Promise<{ error: { message: string } | null }> {
-  if (!ids || ids.length === 0) return { error: null }
-  const { error } = await supabase.from('sales').delete().in('id', ids)
-  return { error }
+): Promise<{ deletedIds: string[]; error: { message: string } | null }> {
+  if (!ids || ids.length === 0) return { deletedIds: [], error: null }
+  const { data, error } = await supabase.from('sales').delete().in('id', ids).select('id')
+  if (error) return { deletedIds: [], error }
+  const deletedIds = (data ?? []).map((row: { id: string }) => row.id)
+  return { deletedIds, error: null }
 }
 

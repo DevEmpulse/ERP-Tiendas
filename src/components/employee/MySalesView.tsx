@@ -83,6 +83,7 @@ export function MySalesView({
           total_amount,
           employee_id,
           branch_id,
+          cash_session_id,
           client_id,
           clients (
             id,
@@ -123,6 +124,7 @@ export function MySalesView({
         total_amount: Number(s.total_amount ?? 0),
         employee_id: String(s.employee_id),
         branch_id: s.branch_id ? String(s.branch_id) : null,
+        cash_session_id: s.cash_session_id ? String(s.cash_session_id) : null,
         client_id: s.client_id ? String(s.client_id) : null,
         clients: s.clients as { id: string; phone: string | null } | null,
         profiles: s.profiles as { id: string; name: string | null; email: string | null } | null,
@@ -163,9 +165,20 @@ export function MySalesView({
 
     try {
       const ids = voidTarget.payments.map((p) => p.id)
-      const { error } = await deleteSaleGroup(supabase, ids)
+      const { deletedIds, error } = await deleteSaleGroup(supabase, ids)
 
       if (error) throw error
+
+      // RLS can silently block the delete (0 rows, no error) — for example
+      // once migration.sql §17.8 denies a caja voiding a sale whose session
+      // has since closed. Surface that as a clear denial instead of a false
+      // success.
+      if (deletedIds.length < ids.length) {
+        toast('Esta venta pertenece a una caja ya cerrada y no puede anularse.', 'error')
+        setVoidTarget(null)
+        await loadMySales()
+        return
+      }
 
       toast('Venta anulada con éxito y stock revertido.', 'success')
       setVoidTarget(null)

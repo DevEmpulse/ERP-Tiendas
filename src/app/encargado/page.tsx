@@ -11,6 +11,9 @@ import { EmployeesView } from '@/components/admin/EmployeesView'
 import { StaffManagementView } from '@/components/admin/StaffManagementView'
 import { ClientManager } from '@/components/admin/ClientManager'
 import { StockView } from '@/components/admin/StockView'
+import { CashSessionPanel } from '@/components/shared/CashSessionPanel'
+import { CashSessionHistoryView } from '@/components/shared/CashSessionHistoryView'
+import { CashSessionStatusBadge } from '@/components/shared/CashSessionStatusBadge'
 import { Button } from '@/components/ui/button'
 import { groupSales, Sale } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -342,6 +345,24 @@ export default function EncargadoPage() {
             branchName={branchName}
           />
         )
+      case 'cash':
+        return (
+          <div className="space-y-6">
+            <CashSessionPanel
+              storeId={userProfile?.store_id || null}
+              branchId={userProfile?.branch_id || null}
+              branchName={branchName}
+              role={userProfile?.role || null}
+              userId={userProfile?.id || null}
+              userBranchId={userProfile?.branch_id || null}
+              onChange={triggerRefreshSales}
+            />
+            <CashSessionHistoryView
+              storeId={userProfile?.store_id || null}
+              branchId={userProfile?.branch_id || null}
+            />
+          </div>
+        )
       default:
         return (
           <div className="py-8 text-center text-sm text-zinc-400">
@@ -435,6 +456,8 @@ export default function EncargadoPage() {
                 <span>{branchName}</span>
               </div>
             )}
+
+            <CashSessionStatusBadge branchId={userProfile?.branch_id ?? null} refreshKey={refreshSalesKey} />
           </div>
 
           <div className="flex items-center gap-3">

@@ -12,6 +12,9 @@ import { ClientManager } from '@/components/admin/ClientManager'
 import { StockView } from '@/components/admin/StockView'
 import { BranchManager } from '@/components/admin/BranchManager'
 import { StoreSettingsView } from '@/components/admin/StoreSettingsView'
+import { CashSessionPanel } from '@/components/shared/CashSessionPanel'
+import { CashSessionHistoryView } from '@/components/shared/CashSessionHistoryView'
+import { CashSessionStatusBadge } from '@/components/shared/CashSessionStatusBadge'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -386,6 +389,23 @@ export default function AdminPage() {
             branchName={branches.find((b) => b.id === selectedBranchId)?.name}
           />
         )
+      case 'cash':
+        return (
+          <div className="space-y-6">
+            <CashSessionPanel
+              storeId={userProfile?.store_id || null}
+              branchId={selectedBranchId}
+              branchName={branches.find((b) => b.id === selectedBranchId)?.name}
+              role={userProfile?.role || null}
+              userId={userProfile?.id || null}
+              onChange={triggerRefreshSales}
+            />
+            <CashSessionHistoryView
+              storeId={userProfile?.store_id || null}
+              branchId={selectedBranchId}
+            />
+          </div>
+        )
       case 'branches':
         return (
           <BranchManager
@@ -511,6 +531,8 @@ export default function AdminPage() {
                 </SelectContent>
               </Select>
             )}
+
+            <CashSessionStatusBadge branchId={selectedBranchId} refreshKey={refreshSalesKey} />
           </div>
 
           <div className="flex items-center gap-3">

@@ -92,6 +92,38 @@ La vista principal de administración (`DashboardView.tsx`, `HistoryView.tsx`, `
 
 ---
 
+## 💰 5.1. Caja (Sesiones de Caja) — Cash Register
+
+Módulo de turno de caja por sucursal (`CashSessionPanel.tsx`, `CashSessionHistoryView.tsx`, sección 17 de `migration.sql`). Resuelve la pregunta que todo comercio necesita al final de un turno: *¿cuánto efectivo debería haber en la caja ahora mismo, y cuánto hay realmente?*
+
+### Apertura y cierre
+- **Un turno abierto por sucursal, garantizado por la base de datos** (no por convención de UI) mediante un índice único parcial. Un segundo intento de apertura concurrente en la misma sucursal se rechaza y la UI muestra "ya hay una sesión abierta en esta sucursal".
+- **Abrir**: solicita el `opening_amount` (fondo inicial). Disponible para `admin`/`superadmin` en cualquier sucursal de su tienda, y para `encargado`/`caja`/`employee` únicamente en la propia.
+- **Cerrar**: solicita el `counted_amount` (efectivo contado físicamente) y muestra la diferencia estimada antes de confirmar. El cierre calcula y **congela permanentemente** `expected_amount` (`apertura + ventas en efectivo de la sesión + ingresos manuales − egresos manuales`) y `discrepancy` (`contado − esperado`). Una sesión cerrada **nunca se reabre** ni se recalcula, aunque después se edite una venta que perteneció a ella.
+- **Continuidad de turno**: cualquier rol autorizado en la sucursal puede seguir vendiendo sobre la sesión ya abierta por otra persona — no existe un paso explícito de "entrega de turno".
+- **Ninguna venta se bloquea nunca por el estado de la caja**: si no hay sesión abierta, la venta se registra igual, sin atribuir (`cash_session_id = NULL`); el panel de historial reporta ese "efectivo sin caja" para que el hueco sea visible en vez de invisible.
+
+### Movimientos manuales (`cash_movements`)
+- Ingresos/egresos manuales de efectivo (ej. pago a un proveedor, vuelto agregado) con `type`, `amount`, `reason` obligatorio y `note` opcional. **Nunca duplica el efectivo de una venta** — el efectivo de ventas se deriva, no se copia.
+- Ledger de solo-inserción: ningún rol, ni siquiera quien creó el movimiento, puede editarlo o eliminarlo después.
+- Un movimiento insertado luego de cerrada su sesión es válido y esperado — es la **vía de corrección recomendada** tras el cierre: en vez de reabrir o editar la venta original, se registra un `cash_out`/`cash_in` explicado en `note`. El historial marca estos movimientos como "post-cierre".
+
+### Bloqueo de edición post-cierre
+Desde que una sesión se cierra, sus ventas y líneas dejan de poder editarse/eliminarse por `encargado`/`caja`/`employee` (enforced a nivel de base de datos, ver `docs/database.md` sección 17.8). Intentarlo desde `SaleModal.tsx` (edición admin) o `MySalesView.tsx` (anulación de empleado) no falla con un error genérico: la operación de borrado devuelve cuántas filas afectó realmente, y si el número es menor al esperado la UI aborta la operación completa (no re-crea la venta) y muestra un mensaje claro en vez de arriesgar una venta duplicada con descuento de stock doble. `admin`/`superadmin` están exentos de este bloqueo.
+
+### Historial y reconciliación (`CashSessionHistoryView.tsx`)
+- Lista de sesiones (abiertas y cerradas) con apertura, cierre, montos contado/esperado y la diferencia resaltada (verde si sobra, rojo si falta).
+- Movimientos expandibles por sesión, con los post-cierre señalados aparte.
+- `admin`/`superadmin` ven el historial de toda la tienda (con selector de sucursal); `encargado`/`caja` solo el de su propia sucursal, en modo solo lectura.
+- Contador de "efectivo sin caja" (ventas en efectivo del día con `cash_session_id IS NULL`) para detectar turnos operados sin abrir sesión.
+
+### Ubicación en la interfaz
+- Panel de administración/encargado: nueva sección **"Caja"** en el menú lateral, junto a Stock/Precios — ligada a la sucursal actualmente seleccionada (el mismo selector que ya usan Dashboard/Historial/Stock), no a un control nuevo en el encabezado.
+- Empleado (`employee-dashboard.tsx`): el panel de sesión se muestra siempre visible arriba de las pestañas (es contexto, no una pestaña más), y una tercera pestaña "Caja" muestra el historial de la propia sucursal.
+- `SaleModal.tsx` (alta/edición de venta desde administración) solo muestra una línea de solo lectura indicando a qué sesión se atribuirá la venta — el control de apertura/cierre vive exclusivamente en el panel de Caja.
+
+---
+
 ## 👑 6. Portal de Superadministrador (`superadmin/page.tsx`)
 
 Herramienta de nivel plataforma para la gestión de la red de tiendas:

@@ -55,12 +55,33 @@ phases:
       chain strategy left pending for the user to choose (stacked-to-main vs
       feature-branch-chain vs size-exception).
   apply:
-    status: pending
-  verify:
-    status: pending
-  archive:
-    status: pending
-next_recommended: sdd-apply
+    status: done
+    note: >
+      Applied 2026-08-29. sdd-apply's own gentle-ai attempt settled as "passed"
+      (~1493 changed lines) despite the task-notification showing a rate-limit
+      crash mid-transcript - the agent completed and settled before fully
+      dying. Orchestrator discovered section 16 (role CHECK + RPCs) was
+      ALREADY partially live in production before the orchestrator's own
+      first apply_migration call (which failed with "function already
+      exists", proving it) - mechanism unclear, but the real employee account
+      had already been reassigned to encargado with a real branch_id.
+      Orchestrator re-ran the full section 16 SQL a second time (idempotent
+      DROP-IF-EXISTS/CREATE-OR-REPLACE pattern, with update_employee_user
+      switched to CREATE OR REPLACE for this re-run) to converge to the exact
+      designed final state. Ran real RLS-impersonation tests (not just
+      structural review) via SET LOCAL request.jwt.claims: encargado
+      self-promotion to admin -> 0 rows changed (closes the live escalation
+      hole); throwaway caja profile -> product INSERT rejected, client INSERT
+      allowed + UPDATE silently blocked (fork #1), cross-branch sales
+      invisible and undeletable. Both new branch CHECK invariants
+      (admin-must-be-NULL, branch-scoped-roles-must-be-NOT-NULL) verified via
+      direct INSERT rejection. get_advisors: no new finding class. One
+      approved deviation kept per user decision (see
+      apply_deviation_reviewed_by_orchestrator above). Remaining manual
+      verification (tasks 1.9, 2.11, and the UI/routing/threat-matrix tasks
+      in phases 4-7) needs a live authenticated session per role - same
+      limitation as every prior phase this session.
+next_recommended: "sdd-verify (after user completes manual UI verification per tasks.md, especially inviting a real stock-role employee to test adjust_branch_stock)"
 review_workload_decision:
   resolved_by: user
   decision: >
@@ -70,6 +91,15 @@ review_workload_decision:
     and offered chaining as the recommended option this time.
   delivery_strategy_for_apply: size:exception
 status: in_progress
+apply_deviation_reviewed_by_orchestrator: >
+  sdd-apply's SQL for update_employee_user added an unrequested extra rule beyond
+  the approved design: an admin's role can never be changed/demoted by anyone,
+  including another admin ("Cannot change or demote the role of an administrator").
+  The approved assignment matrix (proposal Scope B) allowed admin to reassign any
+  role including an existing admin's. Flagged to the user and KEPT deliberately:
+  reduces the blast radius of a compromised admin account demoting other admins.
+  This is now an intentional, confirmed deviation from the original design, not an
+  oversight.
 triggered_by: >
   Queued from store-branches/state.yaml's next_change_queued block: user requested a
   4-role model (admin, encargado de sucursal, caja, stock) while reviewing that

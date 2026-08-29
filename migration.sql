@@ -530,3 +530,205 @@ ALTER TABLE public.sales ALTER COLUMN description DROP NOT NULL;
 -- DROP TABLE IF EXISTS public.products   CASCADE;
 -- DROP TABLE IF EXISTS public.categories CASCADE;
 
+-- 14. Branches (sucursales) — per-store physical locations
+
+-- 14.1 branches table (column shape mirrors categories, :447-455)
+CREATE TABLE IF NOT EXISTS public.branches (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id uuid REFERENCES public.stores(id) ON DELETE CASCADE NOT NULL,
+  name text NOT NULL CHECK (btrim(name) <> ''),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS branches_store_id_idx ON public.branches (store_id);
+
+-- 14.2 RLS: read for the whole store, write for admins (mirrors profiles, :74-83)
+ALTER TABLE public.branches ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view branches in their store" ON public.branches;
+CREATE POLICY "Users can view branches in their store" ON public.branches
+  FOR SELECT TO authenticated
+  USING (store_id = public.get_current_user_store_id());
+
+DROP POLICY IF EXISTS "Admins can manage branches in their store" ON public.branches;
+CREATE POLICY "Admins can manage branches in their store" ON public.branches
+  FOR ALL TO authenticated
+  USING (store_id = public.get_current_user_store_id()
+         AND public.get_current_user_role() IN ('admin', 'superadmin'))
+  WITH CHECK (store_id = public.get_current_user_store_id()
+              AND public.get_current_user_role() IN ('admin', 'superadmin'));
+
+-- 14.3 profiles.branch_id (CHECK is added last, in 14.9)
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS branch_id uuid REFERENCES public.branches(id);
+CREATE INDEX IF NOT EXISTS profiles_branch_id_idx ON public.profiles (branch_id);
+
+-- 14.4 helper — identical shape to get_current_user_store_id() (:41-48)
+CREATE OR REPLACE FUNCTION public.get_current_user_branch_id()
+RETURNS uuid
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT branch_id FROM public.profiles WHERE id = auth.uid();
+$$;
+
+-- 14.5 sales.branch_id — attribution only; sales RLS stays store-wide
+ALTER TABLE public.sales
+  ADD COLUMN IF NOT EXISTS branch_id uuid REFERENCES public.branches(id);
+CREATE INDEX IF NOT EXISTS sales_branch_id_idx ON public.sales (branch_id);
+
+-- 14.6 preload_employee gains p_branch_id (5 args; old 4-arg version is DROPped)
+DROP FUNCTION IF EXISTS public.preload_employee(text, text, text, uuid);
+CREATE FUNCTION public.preload_employee(
+  p_email text, p_name text, p_role text, p_store_id uuid, p_branch_id uuid
+)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth
+AS $$
+DECLARE v_dummy_id uuid;
+BEGIN
+  IF p_role NOT IN ('admin', 'employee') THEN
+    RAISE EXCEPTION 'Invalid role: must be admin or employee';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM public.profiles
+                 WHERE id = auth.uid() AND role = 'admin' AND store_id = p_store_id) THEN
+    RAISE EXCEPTION 'Unauthorized: Only store admins can preload employees';
+  END IF;
+
+  -- Branch is mandatory for employees and mirrors profiles_employee_branch_check.
+  IF p_role = 'employee' AND p_branch_id IS NULL THEN
+    RAISE EXCEPTION 'Branch is required for employee profiles';
+  END IF;
+
+  -- SECURITY DEFINER bypasses RLS: verify the branch belongs to this store.
+  IF p_branch_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.branches WHERE id = p_branch_id AND store_id = p_store_id
+  ) THEN
+    RAISE EXCEPTION 'Invalid branch for this store';
+  END IF;
+
+  v_dummy_id := gen_random_uuid();
+
+  INSERT INTO auth.users (id, email, raw_app_meta_data, raw_user_meta_data, aud, role)
+  VALUES (v_dummy_id, null, '{"provider":"email"}'::jsonb, '{}'::jsonb,
+          'authenticated', 'authenticated');
+
+  INSERT INTO public.profiles (id, store_id, email, name, role, branch_id)
+  VALUES (v_dummy_id, p_store_id, p_email, p_name, p_role,
+          CASE WHEN p_role = 'employee' THEN p_branch_id ELSE NULL END);
+
+  RETURN v_dummy_id;
+END;
+$$;
+
+-- 14.7 update_employee_user gains p_branch_id (old 3-arg version is DROPped)
+DROP FUNCTION IF EXISTS public.update_employee_user(uuid, text, text);
+CREATE FUNCTION public.update_employee_user(
+  p_employee_id uuid, p_name text, p_email text, p_branch_id uuid
+)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth
+AS $$
+DECLARE
+  v_store_id uuid;
+  v_role     text;
+BEGIN
+  SELECT store_id, role INTO v_store_id, v_role
+  FROM public.profiles WHERE id = p_employee_id;
+
+  IF NOT EXISTS (SELECT 1 FROM public.profiles
+                 WHERE id = auth.uid() AND role = 'admin' AND store_id = v_store_id) THEN
+    RAISE EXCEPTION 'Unauthorized: Only store admins can edit employees';
+  END IF;
+
+  IF v_role = 'employee' AND p_branch_id IS NULL THEN
+    RAISE EXCEPTION 'Branch is required for employee profiles';
+  END IF;
+
+  IF p_branch_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.branches WHERE id = p_branch_id AND store_id = v_store_id
+  ) THEN
+    RAISE EXCEPTION 'Invalid branch for this store';
+  END IF;
+
+  UPDATE public.profiles
+  SET name = p_name,
+      email = p_email,
+      branch_id = CASE WHEN v_role = 'employee' THEN p_branch_id ELSE branch_id END
+  WHERE id = p_employee_id;
+
+  UPDATE auth.users SET email = p_email
+  WHERE id = p_employee_id AND email IS NOT NULL;
+END;
+$$;
+
+-- 14.8 handle_new_user: a new store gets "Sucursal Principal" in the same
+-- transaction. Only the ELSE (new-owner) branch changes; the preloaded-profile
+-- relink path is byte-identical to :267-276 and keeps the branch preload set.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth
+AS $$
+DECLARE
+  v_profile_id          uuid;
+  v_store_id            uuid;
+  v_allowed_store_name  text;
+BEGIN
+  IF new.email IS NULL THEN RETURN new; END IF;
+
+  SELECT id, store_id INTO v_profile_id, v_store_id
+  FROM public.profiles WHERE lower(email) = lower(new.email);
+
+  IF v_profile_id IS NOT NULL THEN
+    UPDATE public.profiles SET id = new.id WHERE id = v_profile_id;
+    DELETE FROM auth.users WHERE id = v_profile_id;
+  ELSE
+    SELECT store_name INTO v_allowed_store_name
+    FROM public.allowed_admins WHERE lower(email) = lower(new.email);
+
+    IF v_allowed_store_name IS NOT NULL THEN
+      INSERT INTO public.stores (name) VALUES (v_allowed_store_name)
+      RETURNING id INTO v_store_id;
+
+      -- No store is ever branchless.
+      INSERT INTO public.branches (store_id, name)
+      VALUES (v_store_id, 'Sucursal Principal');
+
+      -- Admin profile keeps branch_id NULL and floats across every branch.
+      INSERT INTO public.profiles (id, store_id, email, name, role)
+      VALUES (new.id, v_store_id, new.email,
+              coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
+              'admin');
+
+      DELETE FROM public.allowed_admins WHERE lower(email) = lower(new.email);
+    ELSE
+      RAISE EXCEPTION 'El correo % no está autorizado para registrarse.', new.email;
+    END IF;
+  END IF;
+
+  RETURN new;
+END;
+$$;
+
+-- 14.9 Employee/admin split, added LAST so a partial apply never breaks invites.
+ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_employee_branch_check;
+ALTER TABLE public.profiles ADD CONSTRAINT profiles_employee_branch_check
+  CHECK (role <> 'employee' OR branch_id IS NOT NULL);
+
+-- ROLLBACK (do not run automatically) — reverse of section 14, bottom to top:
+-- ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_employee_branch_check;
+-- -- Restore the pre-branch handle_new_user() body verbatim from migration.sql:246-311.
+-- DROP FUNCTION IF EXISTS public.update_employee_user(uuid, text, text, uuid);
+-- -- Restore the 3-arg update_employee_user() verbatim from migration.sql:355-392.
+-- DROP FUNCTION IF EXISTS public.preload_employee(text, text, text, uuid, uuid);
+-- -- Restore the 4-arg preload_employee() verbatim from migration.sql:163-210.
+-- DROP INDEX    IF EXISTS public.sales_branch_id_idx;
+-- ALTER TABLE public.sales    DROP COLUMN IF EXISTS branch_id;
+-- DROP FUNCTION IF EXISTS public.get_current_user_branch_id();
+-- DROP INDEX    IF EXISTS public.profiles_branch_id_idx;
+-- ALTER TABLE public.profiles DROP COLUMN IF EXISTS branch_id;
+-- DROP TABLE    IF EXISTS public.branches CASCADE;
+

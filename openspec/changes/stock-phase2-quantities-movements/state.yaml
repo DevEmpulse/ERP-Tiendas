@@ -1,0 +1,128 @@
+change: stock-phase2-quantities-movements
+artifact_store: openspec
+session_preflight:
+  pace: interactive
+  delivery_strategy: ask-on-risk
+  review_budget_lines: 400
+phases:
+  explore:
+    status: done
+    artifact: exploration.md
+  propose:
+    status: done
+    artifact: proposal.md
+    note: >
+      Rewritten 2026-08-29 against branch-scoped stock plus the EAN-8 product
+      code and Excel import scope expansion. Supersedes the pre-branch version.
+  spec:
+    status: done
+    artifacts:
+      - specs/stock-tracking/spec.md
+      - specs/product-catalog/spec.md
+      - specs/product-labeling/spec.md
+      - specs/product-import/spec.md
+      - specs/sale-line-items/spec.md
+  design:
+    status: done
+    artifact: design.md
+    note: >
+      Full rewrite 2026-08-29 against the branch-scoped model. Section 15 DDL:
+      composite-PK branch_stock (branch_id, product_id), append-only
+      stock_movements, Shape B RLS verbatim from store-branches, composite
+      (store_id, id) FKs closing the cross-store pairing hole, EAN-8 sequence +
+      check-digit function, barcode conversion via column DEFAULT, and
+      adjust_branch_stock(). sale_items.branch_id is DENORMALIZED and filled by
+      a BEFORE INSERT trigger, because the AFTER DELETE reversal cannot join to
+      an already-cascaded sales row. Excel library: exceljs (dynamic import),
+      with an apply-time registry/bundle preflight and a documented fallback to
+      read-excel-file + write-excel-file.
+  tasks:
+    status: stale
+    artifact: tasks.md
+    note: >
+      Leftover from the pre-branch single-store-stock model. Must be rewritten
+      after spec and design are redone against the 2026-08-29 proposal.md.
+  apply:
+    status: pending
+  verify:
+    status: pending
+  archive:
+    status: pending
+next_recommended: sdd-tasks
+status: in_progress
+unpaused_reason: >
+  store-branches landed: branches table, profiles.branch_id,
+  get_current_user_branch_id(), the two-tier RLS contract, and the admin
+  branch selector are all live in production. The blocker this change was
+  paused for is cleared. All of this change's prior artifacts (proposal.md,
+  design.md, specs/, tasks.md) were written against the pre-branch,
+  single-store-stock model and are STALE - they must be rewritten, not
+  patched, against branch-scoped stock (branch_stock keyed by
+  (branch_id, product_id), not products.stock_quantity).
+scope_expansion_2026_08_29: >
+  Before re-proposing, the user added two more requirements to this same
+  change (confirmed: they belong here, not a separate change, because both
+  depend on the branch-scoped stock model and on each other):
+  1. Excel product import/update: columns Nombre del Producto, Sección
+     (=category, auto-created if missing), Cantidad Ingresada, Precio Costo
+     Unitario, Precio Venta Unitario. Margen%/Totales columns are ignored
+     (always recalculated, never trusted from the file - the user's reference
+     file even has a #VALUE! error in a Margen% formula). No product ID in a
+     row -> create new. Existing ID -> update identity fields AND add the
+     imported quantity as a new "ingreso" stock_movement at the
+     admin-chosen destination branch (never overwrite stock). Show a
+     new/updated/new-categories summary before the user confirms the import.
+  2. Numeric 8-digit product ID doubling as a printable/scannable barcode,
+     replacing Phase 1's free-text optional `products.barcode` semantics
+     entirely (MODIFIED product-catalog requirement). Used for manual keypad
+     entry at the register when a scanner fails, and as the Excel importer's
+     match key. Printable label: barcode + the 8-digit ID text + product name
+     + sale price, printable individually or in batch (e.g. all products from
+     one import run).
+  decisions_resolved_by_user:
+    barcode_format: >
+      EAN-8, not Code128. The ID is stored/generated as a 7-digit global
+      Postgres sequence (0000001-9999999) zero-padded, with an 8th digit
+      computed as the real EAN-8 check digit - not a free 8th sequence digit.
+      This makes the printed/scanned code a standards-compliant EAN-8 readable
+      by any barcode scanner, at the cost of the ID not being purely
+      sequential-looking (the last digit is a checksum, not a counter step).
+    barcode_library: >
+      jsbarcode (framework-agnostic, called imperatively on a canvas/svg ref
+      inside a useEffect) - avoids React-19 peer-dependency risk that a React
+      wrapper package (e.g. react-barcode) could carry. No existing barcode or
+      Excel-parsing dependency exists in package.json today; both are new.
+    sequence_scope: >
+      Global across all tenants (one Postgres SEQUENCE), not per-store. Chosen
+      for implementation simplicity - no cross-tenant coordination needed
+      under RLS, and 10M codes is ample capacity for this system's scale.
+out_of_scope_still: >
+  Barcode SCANNING at the point of sale (stays Phase 4, "new POS UI" - this
+  change only generates and prints/renders labels). Receipt/ticket rendering
+  beyond the product label itself (stays Phase 6, now narrower than
+  originally scoped since label printing is delivered here).
+proposal_assumptions_confirmed_by_user: true
+proposal_round2_resolution: >
+  User pushed back on assumption #2 (unmatched Excel ID -> reject). Changed to:
+  unmatched or missing ID -> always create as new with a fresh EAN-8 code,
+  never reject, never adopt the file's value as the real code (an external
+  number can't be trusted as a valid, collision-safe EAN-8). User then asked
+  how bulk stock updates would work in practice without a way to get real
+  codes into a spreadsheet - added "Catalog export to Excel" to scope
+  (In Scope item C, new component ProductExportButton/inline in StockView,
+  column format matches import exactly so export -> edit -> re-import
+  round-trips). Orchestrator independently verified products has 0 rows in
+  production directly via execute_sql (not inherited from a prior phase's
+  claim, given store-branches' own "no data" assumption was wrong once).
+  All other assumptions (1, 3, 4, 7) confirmed as originally proposed.
+decisions:
+  ui_scope:
+    question: >
+      Does Phase 2 include a minimal admin product/stock UI (extending StockView.tsx),
+      or ship schema-only (stock_quantity column + stock_movements ledger, no UI)?
+    resolved_by: user
+    decision: >
+      Include minimal admin product/stock UI (Approach 2): create/edit a product's
+      identity fields plus stock_quantity, and a manual stock-adjustment action.
+      Excludes sales-time product picker (Phase 4), barcode UI (Phase 6), cash
+      register/analytics (Phase 3/7).

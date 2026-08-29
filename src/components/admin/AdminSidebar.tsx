@@ -1,9 +1,9 @@
 'use client'
 
-import { LayoutDashboard, Calendar, TrendingUp, Users, LogOut, Store, X, Contact, Tags, Settings } from 'lucide-react'
+import { LayoutDashboard, Calendar, TrendingUp, Users, LogOut, Store, X, Contact, Tags, Settings, Building2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
-export type AdminSection = 'dashboard' | 'history' | 'employees' | 'staff' | 'clients' | 'stock' | 'settings'
+export type AdminSection = 'dashboard' | 'history' | 'employees' | 'staff' | 'clients' | 'stock' | 'branches' | 'settings'
 
 interface AdminSidebarProps {
   currentSection: AdminSection
@@ -62,6 +62,12 @@ export function AdminSidebar({
       label: 'Stock / Precios',
       icon: Tags,
       description: 'Reglas de precio por cantidad',
+    },
+    {
+      id: 'branches' as AdminSection,
+      label: 'Sucursales',
+      icon: Building2,
+      description: 'Crear, renombrar y desactivar sucursales',
     },
     {
       id: 'settings' as AdminSection,

@@ -35,6 +35,7 @@ interface SaleModalProps {
   isOpen: boolean
   onOpenChange: (open: boolean) => void
   storeId: string | null
+  branchId?: string | null
   employees: Array<{ id: string; name: string | null; email?: string | null; role?: string | null }>
   saleToEdit?: GroupedSale | null
   onSuccess: () => void
@@ -105,6 +106,7 @@ export function SaleModal({
   isOpen,
   onOpenChange,
   storeId,
+  branchId = null,
   employees,
   saleToEdit,
   onSuccess,
@@ -305,6 +307,9 @@ export function SaleModal({
     setLoading(true)
     setErrorMsg(null)
 
+    // Preserve the sale's original branch on edit; otherwise use the currently-selected branch.
+    const resolvedBranchId = saleToEdit?.branch_id ?? branchId
+
     // For edits keep optimistic close; for new sales wait for DB then show receipt
     if (isEditMode) {
       onSuccess()
@@ -385,6 +390,7 @@ export function SaleModal({
           store_id: storeId, employee_id: employeeId,
           description: `${description} (Efectivo - Ref: #${txnRef})`,
           payment_method: 'cash', total_amount: cashNum, client_id: clientId,
+          branch_id: resolvedBranchId,
           ...(originalDate ? { created_at: originalDate } : {}),
         })
 
@@ -393,6 +399,7 @@ export function SaleModal({
           store_id: storeId, employee_id: employeeId,
           description: `${description} (Transferencia - Ref: #${txnRef})`,
           payment_method: 'transfer', total_amount: transferNum, client_id: clientId,
+          branch_id: resolvedBranchId,
           ...(originalDate ? { created_at: originalDate } : {}),
         })
 
@@ -401,6 +408,7 @@ export function SaleModal({
           store_id: storeId, employee_id: employeeId,
           description: `${description} (Tarjeta - Ref: #${txnRef})`,
           payment_method: 'card', total_amount: cardNum, client_id: clientId,
+          branch_id: resolvedBranchId,
           ...(originalDate ? { created_at: originalDate } : {}),
         })
 
@@ -420,6 +428,7 @@ export function SaleModal({
           payment_method: paymentMethod,
           total_amount: parseInt(amount, 10),
           client_id: clientId,
+          branch_id: resolvedBranchId,
         }
         if (isEditMode && saleToEdit) saleData.created_at = saleToEdit.created_at
         const { data: insertedSale, error: insertError } = await supabase.from('sales').insert(saleData).select('id').single()

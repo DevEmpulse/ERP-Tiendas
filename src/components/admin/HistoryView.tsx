@@ -10,6 +10,7 @@ interface HistoryViewProps {
   loading: boolean
   employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
+  branchId?: string | null
   storeName?: string
   onSalesChange?: () => void
 }
@@ -19,6 +20,7 @@ export function HistoryView({
   loading,
   employees = [],
   storeId = null,
+  branchId = null,
   storeName = 'ERP Tiendas',
   onSalesChange = () => {}
 }: HistoryViewProps) {
@@ -41,6 +43,7 @@ export function HistoryView({
         loading={loading}
         employees={employees}
         storeId={storeId}
+        branchId={branchId}
         storeName={storeName}
         onSalesChange={onSalesChange}
       />

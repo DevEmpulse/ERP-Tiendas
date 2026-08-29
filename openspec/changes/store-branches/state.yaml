@@ -1,0 +1,116 @@
+change: store-branches
+artifact_store: openspec
+session_preflight:
+  pace: interactive
+  delivery_strategy: ask-on-risk
+  review_budget_lines: 400
+phases:
+  explore:
+    status: done
+    artifact: exploration.md
+  propose:
+    status: done
+    artifact: proposal.md
+  spec:
+    status: done
+    artifacts:
+      - specs/store-branches/spec.md
+      - specs/branch-scoped-access/spec.md
+      - specs/product-catalog/spec.md
+  design:
+    status: done
+    artifact: design.md
+  tasks:
+    status: done
+    artifact: tasks.md
+  apply:
+    status: partial
+    note: >
+      Code implementation complete (npm run build passes) and all DB schema
+      tasks (1.4-1.7 in tasks.md) applied and verified directly against
+      production (dev-branch convention overridden by user, see
+      apply_target_reason below). 3 authenticated-UI tasks (2.5, 3.5, 4.6)
+      remain for the user to manually verify - no OAuth credentials available
+      to the orchestrator for the real accounts.
+  verify:
+    status: pending
+  archive:
+    status: pending
+next_recommended: "sdd-verify (after user completes manual UI verification 2.5/3.5/4.6 in tasks.md)"
+production_backfill_performed:
+  discovered: >
+    Contrary to the decisions.production_data entry below, production held 3
+    real stores, 4 real profiles (1 employee), 0 sales. The 14.9 CHECK
+    constraint failed on the first apply attempt because of this.
+  action: >
+    Created "Sucursal Principal" for each of the 3 existing stores; backfilled
+    the one existing employee's branch_id to their store's new branch; then
+    re-applied the CHECK constraint successfully. Verified real row counts
+    (3 stores/4 profiles/3 branches) unchanged after backfill + probe cleanup.
+apply_target: production
+apply_target_reason: >
+  User explicitly overrode the dev-branch-first convention for this project:
+  "que sea en produccion, cambia esa convencion del proyecto, por ahora todos
+  los cambios a produccion." Saved to persistent memory
+  (erp-tiendas-supabase-production-only.md) for future SDD phases.
+review_workload_forecast:
+  estimated_changed_lines: "~950-1050"
+  budget_risk: High
+  chained_prs_recommended: true
+  decision_needed_before_apply: false
+  resolved_by: user
+  decision: >
+    size:exception accepted - single PR, not chained. User explicitly chose
+    one PR over the 4-way chained split despite the ~950-1050 line estimate
+    exceeding the 400-line budget.
+  delivery_strategy_for_apply: size:exception
+status: in_progress
+proposal_assumptions_confirmed_by_user: true
+proposal_assumptions_resolution: >
+  Round 2 resolved: (1) sales RLS stays store-wide - stands; (2) no "All
+  branches" selector option - stands; (3) employee branch reassignment -
+  ADDED to scope (update_employee_user gains p_branch_id + edit-form select);
+  (4) soft branch deactivation - stands.
+next_change_queued:
+  name: granular-roles
+  reason: >
+    User requested a 4-role model (admin, encargado de sucursal, caja, stock)
+    while reviewing this proposal. Sequenced as the change immediately after
+    store-branches (encargado is inherently branch-scoped, so branches must
+    exist first). Not folded into store-branches.
+  decisions_pre_resolved_for_that_change:
+    encargado_scope: >
+      Full control of their own branch: sales, stock, caja, and employee
+      management (invite/edit/deactivate) scoped to that branch - functionally
+      an admin restricted to one branch.
+    caja_stock_exclusivity: >
+      Separate, exclusive roles, not combinable permissions. profiles.role
+      will admit exactly one of admin | encargado | caja | stock.
+decisions:
+  production_data:
+    question: Does real production data exist in stores/profiles/sales today?
+    resolved_by: user
+    decision: >
+      No real data yet. No backfill migration needed; the employee
+      branch_id NOT NULL CHECK constraint can be added directly.
+    outcome: >
+      INCORRECT - disproven at apply time. Production actually held 3 stores,
+      4 profiles (1 employee), 0 sales. See production_backfill_performed
+      above for the corrective action taken.
+  sales_branch_id_write_path:
+    question: >
+      Does sales.branch_id get populated by the writers (sales-form.tsx,
+      SaleModal.tsx) in this change, or ship schema-only?
+    resolved_by: user
+    decision: >
+      Populate it now: sales-form.tsx and SaleModal.tsx resolve the acting
+      user's branch (own branch_id for an employee, selected branch for an
+      admin) and write it on every sales insert.
+triggered_by: >
+  User expanded scope while stock-phase2-quantities-movements was paused: stores
+  will support multiple branches (sucursales), each with its own stock and cash
+  register. Admins manage every branch of their store from one account with a
+  branch selector; employees are tied to exactly one branch. This change must
+  land before Phase 2's stock redesign (branch_stock table, branch-scoped RLS)
+  can resume.
+blocks: stock-phase2-quantities-movements

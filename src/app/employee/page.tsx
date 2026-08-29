@@ -12,6 +12,7 @@ interface Profile {
   name: string | null
   role: string | null
   email: string | null
+  branch_id: string | null
 }
 
 export default function EmployeePage() {
@@ -36,7 +37,7 @@ export default function EmployeePage() {
       // Single query: profile + store name via join
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select('id, store_id, name, role, email, stores(name, thermal_paper_width)')
+        .select('id, store_id, name, role, email, branch_id, stores(name, thermal_paper_width)')
         .eq('id', session.user.id)
         .single()
 

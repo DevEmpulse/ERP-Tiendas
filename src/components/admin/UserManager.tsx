@@ -17,15 +17,28 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { useToast, Toaster } from '@/components/ui/toast'
-import { Users, UserPlus, Search, Mail, ShieldAlert, Edit, Trash2 } from 'lucide-react'
+import { Users, UserPlus, Search, Mail, ShieldAlert, Edit, Trash2, Building2 } from 'lucide-react'
 
 interface UserProfile {
   id: string
   name: string | null
   email: string | null
   role: 'admin' | 'employee'
+  branch_id: string | null
   created_at: string
+}
+
+interface Branch {
+  id: string
+  name: string
 }
 
 interface UserManagerProps {
@@ -41,8 +54,12 @@ export function UserManager({ storeId }: UserManagerProps) {
   // Form states
   const [newEmail, setNewEmail] = useState('')
   const [newName, setNewName] = useState('')
+  const [newBranchId, setNewBranchId] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  // Branches (active only)
+  const [branches, setBranches] = useState<Branch[]>([])
 
   // Edit/Delete states
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
@@ -51,6 +68,7 @@ export function UserManager({ storeId }: UserManagerProps) {
   const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null)
   const [editName, setEditName] = useState('')
   const [editEmail, setEditEmail] = useState('')
+  const [editBranchId, setEditBranchId] = useState<string | null>(null)
 
   const { toasts, toast, dismiss } = useToast()
   const supabase = createClient()
@@ -60,7 +78,7 @@ export function UserManager({ storeId }: UserManagerProps) {
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('id, name, email, role, created_at')
+        .select('id, name, email, role, branch_id, created_at')
         .order('role', { ascending: true }) // Admins first
         .order('name', { ascending: true })
 
@@ -79,7 +97,7 @@ export function UserManager({ storeId }: UserManagerProps) {
       try {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, name, email, role, created_at')
+          .select('id, name, email, role, branch_id, created_at')
           .order('role', { ascending: true })
           .order('name', { ascending: true })
 
@@ -102,6 +120,30 @@ export function UserManager({ storeId }: UserManagerProps) {
     return () => { ignore = true }
   }, [supabase])
 
+  // Load active branches once (used by both the invite and edit selects)
+  useEffect(() => {
+    let ignore = false
+    async function run() {
+      try {
+        const { data, error } = await supabase
+          .from('branches')
+          .select('id, name')
+          .eq('is_active', true)
+          .order('name', { ascending: true })
+        if (error) throw error
+        if (!ignore) {
+          const list = (data as Branch[]) || []
+          setBranches(list)
+          setNewBranchId(prev => prev || list[0]?.id || '')
+        }
+      } catch (err: unknown) {
+        console.error('Error loading branches:', err)
+      }
+    }
+    run()
+    return () => { ignore = true }
+  }, [supabase])
+
   // Handle Edit Member
   const handleEditUser = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -117,10 +159,16 @@ export function UserManager({ storeId }: UserManagerProps) {
       return
     }
 
+    if (selectedUser.role === 'employee' && !editBranchId) {
+      setErrorMsg('Selecciona una sucursal.')
+      return
+    }
+
     // Optimistic close
     const userSnapshot = selectedUser
     const nameSnapshot = editName.trim()
     const emailSnapshot = editEmail.trim().toLowerCase()
+    const branchIdSnapshot = editBranchId
     setIsEditOpen(false)
     setSelectedUser(null)
     setErrorMsg(null)
@@ -129,7 +177,8 @@ export function UserManager({ storeId }: UserManagerProps) {
       const { error } = await supabase.rpc('update_employee_user', {
         p_employee_id: userSnapshot.id,
         p_name: nameSnapshot,
-        p_email: emailSnapshot
+        p_email: emailSnapshot,
+        p_branch_id: branchIdSnapshot
       })
 
       if (error) throw error
@@ -174,6 +223,7 @@ export function UserManager({ storeId }: UserManagerProps) {
     setSelectedUser(user)
     setEditName(user.name || '')
     setEditEmail(user.email || '')
+    setEditBranchId(user.branch_id)
     setErrorMsg(null)
     setIsEditOpen(true)
   }
@@ -202,9 +252,15 @@ export function UserManager({ storeId }: UserManagerProps) {
       return
     }
 
+    if (!newBranchId) {
+      setErrorMsg('Selecciona una sucursal.')
+      return
+    }
+
     // Optimistic close
     const emailSnapshot = newEmail.trim().toLowerCase()
     const nameSnapshot = newName.trim()
+    const branchIdSnapshot = newBranchId
     setIsDialogOpen(false)
     setNewEmail('')
     setNewName('')
@@ -216,7 +272,8 @@ export function UserManager({ storeId }: UserManagerProps) {
         p_email: emailSnapshot,
         p_name: nameSnapshot,
         p_role: 'employee',
-        p_store_id: storeId
+        p_store_id: storeId,
+        p_branch_id: branchIdSnapshot
       })
 
       if (error) {
@@ -346,6 +403,27 @@ export function UserManager({ storeId }: UserManagerProps) {
                     </div>
                   </div>
 
+                  <div className="space-y-1.5">
+                    <Label htmlFor="new-branch" className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
+                      <Building2 className="h-3.5 w-3.5 text-zinc-400" />
+                      Sucursal
+                    </Label>
+                    <Select value={newBranchId} onValueChange={(v) => setNewBranchId(v as string)}>
+                      <SelectTrigger id="new-branch" className="h-9 w-full border-zinc-200 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm">
+                        <SelectValue placeholder="Selecciona una sucursal...">
+                          {(value: string | null) => branches.find((b) => b.id === value)?.name ?? 'Selecciona una sucursal...'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {branches.map((branch) => (
+                          <SelectItem key={branch.id} value={branch.id}>
+                            {branch.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
                   {/* Validation error only — shown before submit */}
                   {errorMsg && (
                     <div className="flex items-start gap-2 p-3 text-xs text-red-600 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">
@@ -395,6 +473,9 @@ export function UserManager({ storeId }: UserManagerProps) {
                       Rol
                     </TableHead>
                     <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
+                      Sucursal
+                    </TableHead>
+                    <TableHead className="py-2.5 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
                       Fecha Ingreso
                     </TableHead>
                     <TableHead className="py-2.5 text-right pr-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">
@@ -428,6 +509,11 @@ export function UserManager({ storeId }: UserManagerProps) {
                             empleado/a
                           </span>
                         )}
+                      </TableCell>
+                      <TableCell className="py-3 text-xs text-zinc-500 dark:text-zinc-400">
+                        {user.role === 'employee'
+                          ? branches.find(b => b.id === user.branch_id)?.name || '—'
+                          : '—'}
                       </TableCell>
                       <TableCell className="py-3 text-xs text-zinc-400">
                         {formatDate(user.created_at)}
@@ -506,6 +592,29 @@ export function UserManager({ storeId }: UserManagerProps) {
                   />
                 </div>
               </div>
+
+              {selectedUser?.role === 'employee' && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-branch" className="text-xs font-semibold text-zinc-650 dark:text-zinc-300 flex items-center gap-1.5">
+                    <Building2 className="h-3.5 w-3.5 text-zinc-400" />
+                    Sucursal
+                  </Label>
+                  <Select value={editBranchId ?? ''} onValueChange={(v) => setEditBranchId(v as string)}>
+                    <SelectTrigger id="edit-branch" className="h-9 w-full border-zinc-200 dark:border-zinc-800 dark:bg-zinc-950/20 text-sm">
+                      <SelectValue placeholder="Selecciona una sucursal...">
+                        {(value: string | null) => branches.find((b) => b.id === value)?.name ?? 'Selecciona una sucursal...'}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {branches.map((branch) => (
+                        <SelectItem key={branch.id} value={branch.id}>
+                          {branch.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
               {errorMsg && (
                 <div className="flex items-start gap-2 p-3 text-xs text-red-650 bg-red-50 border border-red-200/50 dark:text-red-400 dark:bg-red-950/20 dark:border-red-900/30 rounded-lg font-medium">

@@ -34,6 +34,7 @@ interface SalesFormProps {
     store_id: string
     name: string | null
     role: string | null
+    branch_id: string | null
   }
   storeName?: string
   paperWidth?: '58mm' | '80mm'
@@ -236,6 +237,7 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
     const supabase = createClient()
     const storeId = profile.store_id
     const employeeId = profile.id
+    const branchId = profile.branch_id // non-null for employees (DB CHECK guarantees it)
 
     try {
       let clientId: string | null = null
@@ -350,7 +352,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             description: `${compiledDesc} (Efectivo - Ref: #${txnRef})`,
             payment_method: 'cash',
             total_amount: cashNum,
-            client_id: clientId
+            client_id: clientId,
+            branch_id: branchId
           })
         }
 
@@ -361,7 +364,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             description: `${compiledDesc} (Transferencia - Ref: #${txnRef})`,
             payment_method: 'transfer',
             total_amount: transferNum,
-            client_id: clientId
+            client_id: clientId,
+            branch_id: branchId
           })
         }
 
@@ -372,7 +376,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             description: `${compiledDesc} (Tarjeta - Ref: #${txnRef})`,
             payment_method: 'card',
             total_amount: cardNum,
-            client_id: clientId
+            client_id: clientId,
+            branch_id: branchId
           })
         }
 
@@ -404,7 +409,8 @@ export default function SalesForm({ profile, storeName = 'Mi Tienda', paperWidth
             description: compiledDesc,
             payment_method: paymentMethod,
             total_amount: productsTotal,
-            client_id: clientId
+            client_id: clientId,
+            branch_id: branchId
           })
           .select('id')
           .single()

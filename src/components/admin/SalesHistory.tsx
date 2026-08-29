@@ -16,6 +16,7 @@ interface SalesHistoryProps {
   loading: boolean
   employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
+  branchId?: string | null
   storeName?: string
   onSalesChange?: () => void
 }
@@ -52,6 +53,7 @@ export function SalesHistory({
   loading,
   employees = [],
   storeId = null,
+  branchId = null,
   storeName = 'ERP Tiendas',
   onSalesChange = () => {}
 }: SalesHistoryProps) {
@@ -428,6 +430,7 @@ export function SalesHistory({
         loading={loading}
         employees={employees}
         storeId={storeId}
+        branchId={branchId}
         onSalesChange={onSalesChange}
       />
     </div>

@@ -13,6 +13,7 @@ interface Profile {
   name: string | null
   role: string | null
   email: string | null
+  branch_id: string | null
 }
 
 interface EmployeeDashboardProps {

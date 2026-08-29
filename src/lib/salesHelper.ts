@@ -28,6 +28,7 @@ export interface Sale {
   total_amount: number | string
   employee_id: string
   client_id?: string | null
+  branch_id?: string | null
   clients?: { id: string, phone: string | null } | null
   profiles?: SaleProfile | SaleProfile[] | null
   sale_items?: SaleItemRow[] | null
@@ -116,6 +117,7 @@ export interface GroupedSale {
   ref_code?: string
   client_id?: string | null
   client_phone?: string | null
+  branch_id?: string | null
   sale_items?: SaleItemRow[] | null
 }
 
@@ -178,6 +180,7 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           ref_code: refCode,
           client_id: sale.client_id || null,
           client_phone: sale.clients?.phone || null,
+          branch_id: sale.branch_id ?? null,
           sale_items: sale.sale_items ?? null
         }
         grouped.push(newGroup)
@@ -211,6 +214,7 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
           is_combined: false,
           client_id: sale.client_id || null,
           client_phone: sale.clients?.phone || null,
+          branch_id: sale.branch_id ?? null,
           sale_items: sale.sale_items ?? null
         }
         grouped.push(newGroup)

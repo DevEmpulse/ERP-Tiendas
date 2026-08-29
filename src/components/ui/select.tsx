@@ -18,6 +18,9 @@ function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   )
 }
 
+// Unlike Radix, Base UI's Value does not resolve the matching SelectItem's
+// label automatically — pass a `children` render function `(value) => label`
+// or it renders the raw value.
 function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   return (
     <SelectPrimitive.Value

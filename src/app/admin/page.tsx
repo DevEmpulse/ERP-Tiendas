@@ -10,11 +10,24 @@ import { EmployeesView } from '@/components/admin/EmployeesView'
 import { StaffManagementView } from '@/components/admin/StaffManagementView'
 import { ClientManager } from '@/components/admin/ClientManager'
 import { StockView } from '@/components/admin/StockView'
+import { BranchManager } from '@/components/admin/BranchManager'
 import { StoreSettingsView } from '@/components/admin/StoreSettingsView'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { groupSales, Sale } from '@/lib/salesHelper'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Menu, LogOut, Store, ShieldCheck } from 'lucide-react'
+
+interface Branch {
+  id: string
+  name: string
+}
 
 interface Profile {
   id: string
@@ -41,6 +54,15 @@ export default function AdminPage() {
   const [employeesList, setEmployeesList] = useState<Profile[]>([])
   const [initialLoading, setInitialLoading] = useState(true)
   const [dataLoading, setDataLoading] = useState(true)
+
+  // Branch selector state — active branches only; exactly one is always selected
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null)
+  const [refreshBranchesKey, setRefreshBranchesKey] = useState(0)
+
+  const triggerRefreshBranches = () => {
+    setRefreshBranchesKey(prev => prev + 1)
+  }
 
   // Layout & Navigation State
   const [activeSection, setActiveSection] = useState<AdminSection>('dashboard')
@@ -129,6 +151,7 @@ export default function AdminPage() {
               payment_method,
               total_amount,
               employee_id,
+              branch_id,
               profiles (
                 id,
                 name,
@@ -170,6 +193,47 @@ export default function AdminPage() {
 
     loadData()
   }, [userProfile, supabase, refreshSalesKey])
+
+  // 3. Fetch active branches for this store and resolve the selected branch
+  useEffect(() => {
+    if (!userProfile?.store_id) return
+
+    async function loadBranches() {
+      try {
+        const { data, error } = await supabase
+          .from('branches')
+          .select('id, name')
+          .eq('is_active', true)
+          .order('name', { ascending: true })
+
+        if (error) throw error
+        const activeBranches = (data as Branch[]) || []
+        setBranches(activeBranches)
+
+        const storageKey = `erp:selectedBranchId:${userProfile!.store_id}`
+        const stored = typeof window !== 'undefined' ? window.localStorage.getItem(storageKey) : null
+        const storedIsValid = stored && activeBranches.some(b => b.id === stored)
+        const nextSelected = storedIsValid ? stored : (activeBranches[0]?.id ?? null)
+
+        setSelectedBranchId(nextSelected)
+        if (typeof window !== 'undefined' && nextSelected) {
+          window.localStorage.setItem(storageKey, nextSelected)
+        }
+      } catch (err) {
+        console.error('Error fetching branches:', err)
+      }
+    }
+
+    loadBranches()
+  }, [userProfile, supabase, refreshBranchesKey])
+
+  // Persist branch selection changes made directly from the header selector
+  const handleSelectBranch = (branchId: string) => {
+    setSelectedBranchId(branchId)
+    if (typeof window !== 'undefined' && userProfile?.store_id) {
+      window.localStorage.setItem(`erp:selectedBranchId:${userProfile.store_id}`, branchId)
+    }
+  }
 
   // Realtime subscription for sales INSERT events
   useEffect(() => {
@@ -281,6 +345,7 @@ export default function AdminPage() {
             highlightedSaleIds={highlightedSaleIds}
             employees={employeesList}
             storeId={userProfile?.store_id || null}
+            branchId={selectedBranchId}
             storeName={storeInfo?.name || 'Mi Tienda'}
             paperWidth={paperWidth}
             onSalesChange={triggerRefreshSales}
@@ -293,6 +358,7 @@ export default function AdminPage() {
             loading={dataLoading}
             employees={employeesList}
             storeId={userProfile?.store_id || null}
+            branchId={selectedBranchId}
             storeName={storeInfo?.name || 'Mi Tienda'}
             onSalesChange={triggerRefreshSales}
           />
@@ -305,6 +371,13 @@ export default function AdminPage() {
         return <StaffManagementView storeId={userProfile?.store_id || null} />
       case 'stock':
         return <StockView storeId={userProfile?.store_id || null} />
+      case 'branches':
+        return (
+          <BranchManager
+            storeId={userProfile?.store_id || null}
+            onBranchesChange={triggerRefreshBranches}
+          />
+        )
       case 'settings':
         return (
           <StoreSettingsView
@@ -401,6 +474,28 @@ export default function AdminPage() {
                 {storeInfo?.name || 'Cargando Tienda...'}
               </h2>
             </div>
+
+            {/* Branch Selector — always exactly one active branch selected, no "all branches" option */}
+            {branches.length > 0 && (
+              <Select
+                value={selectedBranchId ?? undefined}
+                onValueChange={(v) => handleSelectBranch(v as string)}
+              >
+                <SelectTrigger size="sm" className="h-8 gap-1.5 rounded-lg border-zinc-200 dark:border-zinc-800 text-xs font-semibold">
+                  <Store className="h-3.5 w-3.5 text-zinc-400" />
+                  <SelectValue placeholder="Sucursal...">
+                    {(value: string | null) => branches.find((b) => b.id === value)?.name ?? 'Sucursal...'}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {branches.map((branch) => (
+                    <SelectItem key={branch.id} value={branch.id}>
+                      {branch.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <div className="flex items-center gap-3">

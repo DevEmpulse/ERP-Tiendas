@@ -27,6 +27,7 @@ interface SalesTableProps {
   highlightedSaleIds?: string[]
   employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
+  branchId?: string | null
   onSalesChange?: () => void
 }
 
@@ -72,6 +73,7 @@ export function SalesTable({
   highlightedSaleIds = [],
   employees = [],
   storeId = null,
+  branchId = null,
   onSalesChange = () => {}
 }: SalesTableProps) {
   const [searchTerm, setSearchTerm] = useState('')
@@ -430,6 +432,7 @@ export function SalesTable({
         isOpen={isEditOpen}
         onOpenChange={setIsEditOpen}
         storeId={storeId}
+        branchId={branchId}
         employees={employees}
         saleToEdit={selectedSale}
         onSuccess={onSalesChange}

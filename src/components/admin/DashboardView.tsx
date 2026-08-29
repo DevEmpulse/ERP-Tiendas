@@ -19,6 +19,7 @@ interface DashboardViewProps {
   highlightedSaleIds?: string[]
   employees?: Array<{ id: string; name: string | null }>
   storeId?: string | null
+  branchId?: string | null
   storeName?: string
   paperWidth?: '58mm' | '80mm'
   onSalesChange?: () => void
@@ -33,6 +34,7 @@ export function DashboardView({
   highlightedSaleIds = [],
   employees = [],
   storeId = null,
+  branchId = null,
   storeName = 'ERP Tiendas',
   paperWidth = '58mm',
   onSalesChange = () => {}
@@ -103,6 +105,7 @@ export function DashboardView({
         highlightedSaleIds={highlightedSaleIds}
         employees={employees}
         storeId={storeId}
+        branchId={branchId}
         onSalesChange={onSalesChange}
       />
 
@@ -111,6 +114,7 @@ export function DashboardView({
         isOpen={isAddSaleOpen}
         onOpenChange={setIsAddSaleOpen}
         storeId={storeId}
+        branchId={branchId}
         employees={employees}
         storeName={storeName}
         paperWidth={paperWidth}

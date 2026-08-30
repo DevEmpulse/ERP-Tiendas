@@ -57,6 +57,36 @@ phases:
       Files deleted: src/components/employee/sales-form.tsx.
       Files modified: roles.ts, proxy.ts, sidebar-items.ts, employee-dashboard.tsx,
       app/admin/page.tsx, app/encargado/page.tsx.
+    postfix_bugfix: >
+      Orchestrator's post-apply review found two confirmed bugs in the T1-T6
+      apply pass, both fixed in a follow-up bugfix batch (T7 in tasks.md).
+      Bug 1: PosShell.tsx derived branchId solely from profile.branch_id,
+      which is always NULL for the admin role (admins have no fixed branch -
+      admin/page.tsx has its own selectedBranchId selector for this exact
+      reason). Because /pos had no equivalent selector, every admin sale via
+      /pos got sales.branch_id = NULL, which the set_sale_item_branch()
+      trigger propagated to sale_items.branch_id, which made
+      apply_sale_item_stock() silently no-op (it returns early when
+      branch_id IS NULL) - so admin sales via /pos never deducted stock and
+      never attributed to an open cash session (fetchOpenSession also got
+      NULL). Fixed by adding an admin-only branches/selectedBranchId
+      selector to PosShell.tsx's header (same query pattern and Base UI
+      SelectValue children-render-function as admin/page.tsx), an
+      effectiveBranchId derivation used everywhere branch scoping matters,
+      and a handleSubmit guard blocking admin submission with no branch
+      selected. Non-admin roles are unchanged. Bug 2: the quantity-based
+      special-price-rule suggestion feature (product_price_rules table,
+      "×3: $500 - Aplicar" chip) existed in the deleted sales-form.tsx and
+      still exists in SaleModal.tsx, but was never ported to /pos, silently
+      regressing it for /pos's primary users (caja/employee/encargado).
+      Fixed by adding a PriceRule interface to types.ts, fetching
+      priceRules and exposing getMatchingRule() in PosShell.tsx (ported
+      verbatim from the deleted logic), and rendering the suggestion chip
+      per catalog line in PosCart.tsx, applying unitPrice=rule.unit_price
+      and subtotal=rule.special_price (not quantity*unit_price) on click.
+      Both fixes verified via npm run build (0 TypeScript errors) and the
+      required greps; only PosShell.tsx, PosCart.tsx and types.ts were
+      touched - no schema/RLS/SaleModal.tsx changes.
   verify:
     status: pending
   archive:

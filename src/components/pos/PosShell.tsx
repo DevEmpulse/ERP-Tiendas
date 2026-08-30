@@ -13,6 +13,13 @@ import { PosSubmitPanel, type SplitAmounts } from './PosSubmitPanel'
 import { StockWarningDialog } from './StockWarningDialog'
 import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { LogOut, Store, Menu, CheckCircle2, AlertCircle, ShoppingCart } from 'lucide-react'
 import { fetchOpenSession } from '@/lib/cashSession'
 import {
@@ -20,7 +27,12 @@ import {
   type AdminSection,
 } from '@/components/admin/sidebar-items'
 import { homeFor, type Role } from '@/lib/roles'
-import type { CartLine, PosProduct, StockWarningItem } from './types'
+import type { CartLine, PosProduct, StockWarningItem, PriceRule } from './types'
+
+interface Branch {
+  id: string
+  name: string
+}
 
 interface Profile {
   id: string
@@ -60,6 +72,12 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
 
   const [products, setProducts] = useState<PosProduct[]>([])
   const [lines, setLines] = useState<CartLine[]>([])
+  const [priceRules, setPriceRules] = useState<PriceRule[]>([])
+
+  // Admin-only branch selector — admins have no fixed profile.branch_id, so
+  // /pos needs its own selector mirroring admin/page.tsx's header pattern.
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null)
 
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'transfer' | 'card'>('cash')
   const [isCombined, setIsCombined] = useState(false)
@@ -98,6 +116,62 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
         )
       )
   }, [profile.store_id])
+
+  // ── Price rules fetch (quantity-based special-price suggestions) ──────────
+  useEffect(() => {
+    supabase
+      .from('product_price_rules')
+      .select('id, product_id, product_name, quantity, special_price, unit_price')
+      .then(({ data }) => {
+        if (data) {
+          setPriceRules(
+            data.map((r: Record<string, unknown>) => ({
+              ...r,
+              quantity: Number(r.quantity),
+              special_price: Number(r.special_price),
+              unit_price: Number(r.unit_price),
+            } as PriceRule))
+          )
+        }
+      })
+  }, [profile.store_id])
+
+  // Get matching price rule for a cart line — ported verbatim from the
+  // deleted sales-form.tsx / SaleModal.tsx logic.
+  const getMatchingRule = useCallback((productName: string, quantity: number, productId?: string | null): PriceRule | null => {
+    if (productId) {
+      const byProductId = priceRules.find(r => r.product_id === productId && r.quantity === quantity)
+      if (byProductId) return byProductId
+    }
+    const lower = productName.trim().toLowerCase()
+    return priceRules.find(r => r.product_name.toLowerCase() === lower && r.quantity === quantity) || null
+  }, [priceRules])
+
+  // ── Admin-only branch selector: admins have no fixed branch, so fetch the
+  // active branch list the same way admin/page.tsx does. Other roles keep
+  // using their fixed profile.branch_id and never need this fetch. ─────────
+  useEffect(() => {
+    if (profile.role !== 'admin') return
+
+    supabase
+      .from('branches')
+      .select('id, name')
+      .eq('is_active', true)
+      .order('name', { ascending: true })
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('Error fetching branches:', error)
+          return
+        }
+        const activeBranches = (data as Branch[]) || []
+        setBranches(activeBranches)
+        setSelectedBranchId(prev => prev ?? activeBranches[0]?.id ?? null)
+      })
+  }, [profile.role, profile.store_id])
+
+  // Branch actually used to scope stock checks, cash-session attribution and
+  // the sale itself. Non-admin roles keep their fixed profile.branch_id.
+  const effectiveBranchId = profile.role === 'admin' ? selectedBranchId : profile.branch_id
 
   // ── Toast helper ──────────────────────────────────────────────────────────
   const showToast = (message: string, type: 'success' | 'error' | 'info') => {
@@ -203,7 +277,7 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
     try {
       const storeId = profile.store_id
       const employeeId = profile.id
-      const branchId = profile.branch_id
+      const branchId = effectiveBranchId
 
       let clientId: string | null = null
       if (clientName.trim()) {
@@ -329,6 +403,11 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
 
   // ── Submit validation ──────────────────────────────────────────────────────
   const handleSubmit = async () => {
+    if (profile.role === 'admin' && !effectiveBranchId) {
+      showToast('Seleccioná una sucursal para vender', 'error')
+      return
+    }
+
     if (lines.length === 0) {
       showToast('Agregá al menos un producto al carrito', 'error')
       return
@@ -349,11 +428,11 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
 
     const catalogProductIds = lines.filter(l => l.productId !== null).map(l => l.productId as string)
 
-    if (catalogProductIds.length > 0 && profile.branch_id) {
+    if (catalogProductIds.length > 0 && effectiveBranchId) {
       const { data: stockRows } = await supabase
         .from('branch_stock')
         .select('product_id, current_stock')
-        .eq('branch_id', profile.branch_id)
+        .eq('branch_id', effectiveBranchId)
         .in('product_id', catalogProductIds)
 
       const stockMap = new Map(
@@ -455,8 +534,32 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
                 <Store className="h-4 w-4 text-zinc-600 dark:text-zinc-300" />
               </span>
               <h2 className="text-xs sm:text-sm font-bold text-zinc-800 dark:text-zinc-200">{storeName}</h2>
-              {branchName && <span className="text-xs text-zinc-400 font-medium">· {branchName}</span>}
+              {profile.role !== 'admin' && branchName && (
+                <span className="text-xs text-zinc-400 font-medium">· {branchName}</span>
+              )}
             </div>
+
+            {/* Admin-only branch selector — admins have no fixed branch_id */}
+            {profile.role === 'admin' && branches.length > 0 && (
+              <Select
+                value={selectedBranchId ?? ''}
+                onValueChange={(v) => setSelectedBranchId(v as string)}
+              >
+                <SelectTrigger size="sm" className="h-8 gap-1.5 rounded-lg border-zinc-200 dark:border-zinc-800 text-xs font-semibold">
+                  <Store className="h-3.5 w-3.5 text-zinc-400" />
+                  <SelectValue placeholder="Sucursal...">
+                    {(value: string | null) => branches.find((b) => b.id === value)?.name ?? 'Sucursal...'}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {branches.map((branch) => (
+                    <SelectItem key={branch.id} value={branch.id}>
+                      {branch.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <Button
@@ -506,6 +609,7 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
                 addedLineId={addedLineId}
                 onUpdateLine={updateLine}
                 onRemoveLine={removeLine}
+                getMatchingRule={getMatchingRule}
               />
             </div>
 

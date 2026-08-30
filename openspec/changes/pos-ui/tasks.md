@@ -96,3 +96,13 @@
   - [ ] 6.7.10 `encargado` opens `/pos` → same flow works
   - [ ] 6.7.11 Verify every catalog line in DB has non-null `product_id`
   - [ ] 6.7.12 Verify `sales-form.tsx` is gone and `/employee` sidebar works for `caja`
+
+---
+
+## T7: Post-Apply Bugfix (found by orchestrator review after T1–T6 were applied)
+
+- [x] 7.1 Bug 1 — admin selling via `/pos` never deducted stock or attributed cash sessions, because `PosShell.tsx` derived `branchId` solely from `profile.branch_id`, which is always `null` for `admin`. Fixed in `src/components/pos/PosShell.tsx`: added admin-only `branches`/`selectedBranchId` state (fetched via the same `branches` query pattern as `admin/page.tsx`), a header `<Select>` visible only for `role === 'admin'`, an `effectiveBranchId = profile.role === 'admin' ? selectedBranchId : profile.branch_id` derivation used everywhere branch scoping matters (`doInsert`'s `branchId`, the pre-submit stock check, `fetchOpenSession`), and a `handleSubmit` guard that blocks submission with a toast ("Seleccioná una sucursal para vender") when an admin has not picked a branch yet. Non-admin roles (`encargado`/`caja`/`employee`) are unchanged — they keep using `profile.branch_id` directly.
+- [x] 7.2 Bug 2 — quantity-based special-price rules (`product_price_rules`) were silently dropped when `/pos` replaced `sales-form.tsx`/`SaleModal.tsx`, regressing a working feature for `/pos`'s primary users. Fixed by porting the original matching/apply logic verbatim: `PriceRule` interface added to `src/components/pos/types.ts`; `PosShell.tsx` fetches `priceRules` on mount and exposes a `getMatchingRule(productName, quantity, productId)` helper; `PosCart.tsx` accepts `getMatchingRule` and renders an inline "💡 ×N: $X — Aplicar" suggestion chip per catalog line (`isUnlisted === false`, `productId !== null`) whenever a rule matches the line's current quantity and the line hasn't already applied it (compared against `unitPrice`/`subtotal`); clicking "Aplicar" sets `unitPrice = rule.unit_price` and `subtotal = rule.special_price` directly (not `quantity * unit_price`), matching the original bundle-price semantics.
+- [x] 7.3 `npm run build` — 0 TypeScript errors after both fixes
+- [x] 7.4 Verify: `grep -rn "product_price_rules" src/components/pos/` shows the fetch call in `PosShell.tsx`; `grep -rn "selectedBranchId\|effectiveBranchId" src/components/pos/PosShell.tsx` shows the new admin branch-selection logic
+- [x] 7.5 Files touched: `src/components/pos/PosShell.tsx`, `src/components/pos/PosCart.tsx`, `src/components/pos/types.ts` only — no changes to `SaleModal.tsx`, `migration.sql`, or RLS

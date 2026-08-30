@@ -1,14 +1,15 @@
 'use client'
 
-import { ShoppingCart, Trash2, Package, Plus, Minus, Tag } from 'lucide-react'
+import { ShoppingCart, Trash2, Package, Plus, Minus, Tag, Tags } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { CartLine } from './types'
+import type { CartLine, PriceRule } from './types'
 
 interface PosCartProps {
   lines: CartLine[]
   addedLineId?: string | null
   onUpdateLine: (lineId: string, patch: Partial<CartLine>) => void
   onRemoveLine: (lineId: string) => void
+  getMatchingRule?: (productName: string, quantity: number, productId?: string | null) => PriceRule | null
 }
 
 function formatCLP(value: number): string {
@@ -19,7 +20,7 @@ function formatCLP(value: number): string {
   }).format(value)
 }
 
-export function PosCart({ lines, addedLineId, onUpdateLine, onRemoveLine }: PosCartProps) {
+export function PosCart({ lines, addedLineId, onUpdateLine, onRemoveLine, getMatchingRule }: PosCartProps) {
   if (lines.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -72,6 +73,18 @@ export function PosCart({ lines, addedLineId, onUpdateLine, onRemoveLine }: PosC
             {lines.map(line => {
               const isJustAdded = addedLineId === line.lineId
 
+              // Quantity-based special-price suggestion — catalog lines only,
+              // and only while the line hasn't already applied it.
+              const matchingRule =
+                !line.isUnlisted && line.productId !== null && getMatchingRule
+                  ? getMatchingRule(line.productName, line.quantity, line.productId)
+                  : null
+              const ruleAlreadyApplied =
+                matchingRule !== null &&
+                line.unitPrice === matchingRule.unit_price &&
+                line.subtotal === matchingRule.special_price
+              const showRuleSuggestion = matchingRule !== null && !ruleAlreadyApplied
+
               return (
                 <tr
                   key={line.lineId}
@@ -112,6 +125,21 @@ export function PosCart({ lines, addedLineId, onUpdateLine, onRemoveLine }: PosC
                           <span className="text-[11px] text-zinc-400 font-mono">
                             {line.barcode}
                           </span>
+                        )}
+                        {showRuleSuggestion && matchingRule && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateLine(line.lineId, {
+                                unitPrice: matchingRule.unit_price,
+                                subtotal: matchingRule.special_price,
+                              })
+                            }
+                            className="mt-1 flex items-center gap-1.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 px-2 py-1 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors cursor-pointer select-none animate-in fade-in duration-150"
+                          >
+                            <Tags className="h-3 w-3 shrink-0" />
+                            💡 ×{matchingRule.quantity}: {formatCLP(matchingRule.special_price)} — Aplicar
+                          </button>
                         )}
                       </div>
                     </div>

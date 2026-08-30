@@ -22,3 +22,12 @@ export interface StockWarningItem {
   requested: number
   available: number
 }
+
+export interface PriceRule {
+  id: string
+  product_id: string | null
+  product_name: string
+  quantity: number
+  special_price: number
+  unit_price: number
+}

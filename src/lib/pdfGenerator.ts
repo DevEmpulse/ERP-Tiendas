@@ -352,8 +352,28 @@ export function generateReceiptPdf(data: ReceiptData) {
     margin: { left: 14, right: 14 },
   })
 
+  // ── Subtotal / Discount (only when a discount was applied) ─────────────────
+  let afterTableY = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6
+  const hasDiscount = !!data.discountAmount && data.discountAmount > 0
+  if (hasDiscount) {
+    const subtotalValue = data.subtotal ?? data.totalAmount + (data.discountAmount ?? 0)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
+    doc.setTextColor(...zinc500)
+    doc.text('Subtotal', 14, afterTableY)
+    doc.setTextColor(...zinc900)
+    doc.text(formatCurrency(subtotalValue), pageWidth - 14, afterTableY, { align: 'right' })
+    afterTableY += 6
+
+    doc.setTextColor(...zinc500)
+    doc.text(data.discountLabel ?? 'Descuento', 14, afterTableY)
+    doc.setTextColor(217, 119, 6) // amber-600
+    doc.text(`-${formatCurrency(data.discountAmount ?? 0)}`, pageWidth - 14, afterTableY, { align: 'right' })
+    afterTableY += 6
+  }
+
   // ── Total box ──────────────────────────────────────────────────────────────
-  const finalY = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6
+  const finalY = afterTableY
   const totalBoxH = 16
   doc.setFillColor(...emerald)
   doc.roundedRect(14, finalY, pageWidth - 28, totalBoxH, 3, 3, 'F')

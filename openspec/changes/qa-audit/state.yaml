@@ -122,10 +122,11 @@ key_findings:
 open_forks_for_propose:
   fork_1_remediation_scope: >
     RESOLVED (this phase, by the user): Approach 1, documentation-only fix +
-    tracked debt ledger. docs/database.md and docs/features.md staleness
-    fixed; production RLS grants and the FK cascade inconsistency left as
-    deliberately deferred debt (see fork_3_security_definer_revoke and
-    key_findings.fk_cascade_inconsistency, both untouched this phase).
+    tracked debt ledger, first. docs/database.md and docs/features.md
+    staleness fixed; production RLS grants and the FK cascade inconsistency
+    were initially left as deliberately deferred debt, then the user asked
+    to close both out later the same session - see fork_3_security_definer_
+    revoke and fk_cascade_resolution below for how they were closed.
   fork_2_lint_debt: >
     RESOLVED (this phase): fixed each of the 9 react-hooks/set-state-in-effect
     occurrences individually with a scoped inline eslint-disable comment,
@@ -134,14 +135,39 @@ open_forks_for_propose:
     (unescaped entities, no-explicit-any, exhaustive-deps, unused imports)
     fixed directly - see tasks.md Phase 3. npm run lint: 0 problems.
   fork_3_security_definer_revoke: >
-    STILL OPEN - deferred to a dedicated future security-hardening pass, not
-    touched this phase. Add the missing REVOKE EXECUTE FROM PUBLIC, anon for
-    delete_employee_user/update_employee_user/preload_employee (defense-in-
-    depth hardening, no behavior change, but touches production grants).
+    RESOLVED 2026-08-30, on explicit user request after the phase originally
+    closed. Added migration.sql section 21.1: REVOKE EXECUTE ... FROM PUBLIC,
+    anon + GRANT ... TO authenticated for delete_employee_user(uuid),
+    update_employee_user(uuid,text,text,uuid,text), and
+    preload_employee(text,text,text,uuid,uuid) - applied to production via
+    apply_migration (revoke_execute_employee_management_rpcs), success true.
+    Verified via get_advisors(security): all three functions no longer
+    appear in the anon_security_definer_function_executable list (anon's
+    count dropped from 8 to 5 - only the read-only get_current_user_*/
+    handle_new_user/rls_auto_enable helpers remain, left untouched as
+    genuinely lower-risk/no-arg). They still correctly appear in
+    authenticated_security_definer_function_executable (expected - that's
+    the intentional GRANT).
+  fk_cascade_resolution: >
+    RESOLVED 2026-08-30, same request. Fixed via migration.sql section 21.2:
+    changed stock_movements_store_id_branch_id_fkey and
+    cash_movements_store_id_branch_id_fkey from ON DELETE CASCADE to ON
+    DELETE RESTRICT (queried production's actual pg_constraint definitions
+    first via execute_sql to get the exact auto-generated constraint names
+    rather than guessing). Deliberately did NOT touch branch_stock/
+    cash_sessions/profiles/sales - only the two tables explicitly documented
+    as immutable append-only audit ledgers (stock_movements, cash_movements)
+    needed protection from a hypothetical future branch hard-delete
+    silently destroying their history; profiles/sales were already safely
+    NO ACTION by default. Applied to production via apply_migration
+    (protect_audit_ledgers_from_branch_cascade), success true. Verified via
+    execute_sql reading pg_constraint directly: both constraints now show
+    "ON DELETE RESTRICT". Dormant fix - no code path hard-deletes a branch
+    today, so nothing currently running is affected.
 production_data_last_verified: >
-  Not re-verified this phase (read-only audit, no new writes planned unless
-  fork_3 is chosen) - build_lint_reverified above is the orchestrator's own
-  fresh verification as of this phase.
+  Re-verified 2026-08-30 after closing fork_3/fk_cascade: both fixes
+  confirmed live in production via get_advisors and direct pg_constraint
+  reads, not just apply_migration's success:true response.
 orchestrator_independent_verification: >
   Completed 2026-08-30. Re-ran npm run build (clean, 0 errors, all 13 routes)
   and npm run lint (0 problems, confirmed down from 19) independently after

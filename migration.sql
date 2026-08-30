@@ -2431,4 +2431,72 @@ UPDATE public.branch_stock SET min_stock = 8;
 -- 0/unconfigured before, indistinguishable from any admin-edited value of 0
 -- entered afterward) - only the DEFAULT is reversible with confidence.
 
+-- ==============================================================================
+-- 21. QA AUDIT (Phase 8) — deferred security/data-integrity debt, closed out
+-- ==============================================================================
+-- Both items were flagged by the qa-audit exploration as low-severity,
+-- deliberately-deferred debt, then closed on explicit user request.
+
+-- 21.1 Explicit REVOKE EXECUTE for the three employee-management RPCs. Every
+-- SECURITY DEFINER function from stock-phase2 onward (adjust_branch_stock,
+-- close_cash_session, the analytics functions) already gets this treatment;
+-- these three (from the original P1-era auth work) never did, leaving them
+-- directly callable by anon/PUBLIC at the SQL level (no confirmed exploit —
+-- their internal auth.uid()-based checks fail closed for an unauthenticated
+-- caller — but inconsistent with this codebase's own established pattern).
+REVOKE EXECUTE ON FUNCTION public.delete_employee_user(uuid) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.delete_employee_user(uuid) TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.update_employee_user(uuid, text, text, uuid, text) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.update_employee_user(uuid, text, text, uuid, text) TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.preload_employee(text, text, text, uuid, uuid) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.preload_employee(text, text, text, uuid, uuid) TO authenticated;
+
+-- 21.2 Protect the append-only audit ledgers (stock_movements, cash_movements,
+-- both explicitly documented as immutable history) from ever being silently
+-- destroyed by a branch hard-delete. branch_stock/cash_sessions/profiles/
+-- sales all keep their existing ON DELETE behavior unchanged — only the two
+-- audit-ledger tables' composite branch FK moves from CASCADE to RESTRICT.
+-- Dormant fix: no code path hard-deletes a branch today (soft-delete via
+-- is_active only, per docs/database.md), so this only tightens future
+-- behavior and cannot break anything currently running.
+ALTER TABLE public.stock_movements
+  DROP CONSTRAINT stock_movements_store_id_branch_id_fkey,
+  ADD CONSTRAINT stock_movements_store_id_branch_id_fkey
+    FOREIGN KEY (store_id, branch_id) REFERENCES public.branches (store_id, id) ON DELETE RESTRICT;
+
+ALTER TABLE public.cash_movements
+  DROP CONSTRAINT cash_movements_store_id_branch_id_fkey,
+  ADD CONSTRAINT cash_movements_store_id_branch_id_fkey
+    FOREIGN KEY (store_id, branch_id) REFERENCES public.branches (store_id, id) ON DELETE RESTRICT;
+
+-- 21.3 ROLLBACK (do not run automatically):
+-- REVOKE EXECUTE ON FUNCTION public.delete_employee_user(uuid) FROM authenticated;
+-- GRANT  EXECUTE ON FUNCTION public.delete_employee_user(uuid) TO PUBLIC;
+-- REVOKE EXECUTE ON FUNCTION public.update_employee_user(uuid, text, text, uuid, text) FROM authenticated;
+-- GRANT  EXECUTE ON FUNCTION public.update_employee_user(uuid, text, text, uuid, text) TO PUBLIC;
+-- REVOKE EXECUTE ON FUNCTION public.preload_employee(text, text, text, uuid, uuid) FROM authenticated;
+-- GRANT  EXECUTE ON FUNCTION public.preload_employee(text, text, text, uuid, uuid) TO PUBLIC;
+-- ALTER TABLE public.stock_movements DROP CONSTRAINT stock_movements_store_id_branch_id_fkey,
+--   ADD CONSTRAINT stock_movements_store_id_branch_id_fkey FOREIGN KEY (store_id, branch_id) REFERENCES public.branches (store_id, id) ON DELETE CASCADE;
+-- ALTER TABLE public.cash_movements DROP CONSTRAINT cash_movements_store_id_branch_id_fkey,
+--   ADD CONSTRAINT cash_movements_store_id_branch_id_fkey FOREIGN KEY (store_id, branch_id) REFERENCES public.branches (store_id, id) ON DELETE CASCADE;
+
+-- 22. sales — optional whole-sale discount (POS feature request)
+-- Purely additive, nullable columns. discount_amount is the actual currency
+-- amount subtracted from the pre-discount subtotal to reach total_amount;
+-- discount_type/discount_value record HOW it was computed (for the receipt
+-- and any future reporting), not just the result. sale_items are NEVER
+-- touched by a discount - they keep full per-line prices; only
+-- sales.total_amount (and, for split/combined payments, the sum of that
+-- ref-code group's total_amount rows) reflects the discounted total.
+ALTER TABLE public.sales
+  ADD COLUMN IF NOT EXISTS discount_type   text CHECK (discount_type IN ('percent', 'fixed')),
+  ADD COLUMN IF NOT EXISTS discount_value  numeric(10,2),
+  ADD COLUMN IF NOT EXISTS discount_amount numeric(10,2) NOT NULL DEFAULT 0 CHECK (discount_amount >= 0);
+
+-- Rollback (do not run automatically):
+-- ALTER TABLE public.sales DROP COLUMN IF EXISTS discount_amount, DROP COLUMN IF EXISTS discount_value, DROP COLUMN IF EXISTS discount_type;
+
 

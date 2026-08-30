@@ -1,16 +1,17 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import { AdminSidebar } from '@/components/admin/AdminSidebar'
 import { EncargadoSidebar } from '@/components/encargado/EncargadoSidebar'
 import { EmployeeSidebar } from '@/components/employee/EmployeeSidebar'
 import { BarcodeWedgeListener } from './BarcodeWedgeListener'
-import { ProductPicker } from './ProductPicker'
+import { ProductPicker, type ProductPickerHandle } from './ProductPicker'
 import { PosCart } from './PosCart'
 import { PosSubmitPanel, type SplitAmounts } from './PosSubmitPanel'
 import { StockWarningDialog } from './StockWarningDialog'
+import { ConfirmSaleDialog } from './ConfirmSaleDialog'
 import { ReceiptModal, type ReceiptData } from '@/components/shared/ReceiptModal'
 import { Button } from '@/components/ui/button'
 import {
@@ -85,7 +86,11 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
   const [clientName, setClientName] = useState('')
   const [clientPhone, setClientPhone] = useState('')
 
+  const [discountType, setDiscountType] = useState<'percent' | 'fixed' | null>(null)
+  const [discountValue, setDiscountValue] = useState('')
+
   const [stockWarning, setStockWarning] = useState<StockWarningItem[] | null>(null)
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null)
@@ -96,6 +101,8 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const [logoutLoading, setLogoutLoading] = useState(false)
+
+  const productPickerRef = useRef<ProductPickerHandle>(null)
 
   // ── Product catalog fetch (includes sale_price) ───────────────────────────
   useEffect(() => {
@@ -176,6 +183,21 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
   // the sale itself. Non-admin roles keep their fixed profile.branch_id.
   const effectiveBranchId = profile.role === 'admin' ? selectedBranchId : profile.branch_id
 
+  // ── Keyboard shortcut: "/" jumps focus to the product search box ──────────
+  // (unless already typing in a text input/textarea, mirroring
+  // BarcodeWedgeListener's activeElement tag-checking convention).
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement)?.tagName
+      if (e.key === '/' && tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        e.preventDefault()
+        productPickerRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
   // ── Toast helper ──────────────────────────────────────────────────────────
   const showToast = (message: string, type: 'success' | 'error' | 'info') => {
     setToast({ message, type })
@@ -251,7 +273,16 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
   }, [products, addLine])
 
   // ── Totals ────────────────────────────────────────────────────────────────
-  const grandTotal = lines.reduce((sum, l) => sum + l.subtotal, 0)
+  // Whole-sale discount: adjusts only the final total to charge — never the
+  // individual CartLines/sale_items, which always keep full per-line prices.
+  const subtotalBeforeDiscount = lines.reduce((sum, l) => sum + l.subtotal, 0)
+  const rawDiscountAmount = discountType === 'percent'
+    ? Math.round(subtotalBeforeDiscount * (parseFloat(discountValue || '0') / 100))
+    : discountType === 'fixed'
+      ? parseFloat(discountValue || '0')
+      : 0
+  const discountAmount = Math.min(Math.max(rawDiscountAmount || 0, 0), subtotalBeforeDiscount)
+  const finalTotal = subtotalBeforeDiscount - discountAmount
   const cashNum = parseInt(splitAmounts.cash || '0', 10)
   const transferNum = parseInt(splitAmounts.transfer || '0', 10)
   const cardNum = parseInt(splitAmounts.card || '0', 10)
@@ -272,6 +303,8 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
     setSplitAmounts({ cash: '', transfer: '', card: '' })
     setClientName('')
     setClientPhone('')
+    setDiscountType(null)
+    setDiscountValue('')
   }
 
   // ── Insert ────────────────────────────────────────────────────────────────
@@ -326,14 +359,48 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
         importe: l.subtotal,
       }))
 
+      const discountLabel = discountType === 'percent'
+        ? `Descuento (${discountValue || '0'}%)`
+        : discountType === 'fixed'
+          ? 'Descuento'
+          : null
+
       if (isCombined) {
         const txnRef = (typeof crypto !== 'undefined' && crypto.randomUUID
           ? crypto.randomUUID().slice(0, 4) : 'XPOS').toUpperCase()
 
-        const salesToInsert: Record<string, unknown>[] = []
-        if (cashNum > 0)     salesToInsert.push({ store_id: storeId, employee_id: employeeId, branch_id: branchId, description: `${compiledDesc} (Efectivo - Ref: #${txnRef})`,      payment_method: 'cash',     total_amount: cashNum,     client_id: clientId, cash_session_id: cashSessionId })
-        if (transferNum > 0) salesToInsert.push({ store_id: storeId, employee_id: employeeId, branch_id: branchId, description: `${compiledDesc} (Transferencia - Ref: #${txnRef})`, payment_method: 'transfer', total_amount: transferNum, client_id: clientId, cash_session_id: cashSessionId })
-        if (cardNum > 0)     salesToInsert.push({ store_id: storeId, employee_id: employeeId, branch_id: branchId, description: `${compiledDesc} (Tarjeta - Ref: #${txnRef})`,       payment_method: 'card',     total_amount: cardNum,     client_id: clientId, cash_session_id: cashSessionId })
+        const rows: { method: 'cash' | 'transfer' | 'card'; amount: number; description: string }[] = []
+        if (cashNum > 0)     rows.push({ method: 'cash',     amount: cashNum,     description: `${compiledDesc} (Efectivo - Ref: #${txnRef})` })
+        if (transferNum > 0) rows.push({ method: 'transfer', amount: transferNum, description: `${compiledDesc} (Transferencia - Ref: #${txnRef})` })
+        if (cardNum > 0)     rows.push({ method: 'card',     amount: cardNum,     description: `${compiledDesc} (Tarjeta - Ref: #${txnRef})` })
+
+        // Distribute the whole-sale discount_amount proportionally by each
+        // row's share of finalTotal; the last row absorbs the rounding
+        // remainder so the group's discount_amount values sum exactly to
+        // discountAmount. Every row shares the same discount_type/value.
+        let assignedDiscount = 0
+        const rowDiscounts = rows.map((row, idx) => {
+          if (idx === rows.length - 1) {
+            return discountAmount - assignedDiscount
+          }
+          const share = finalTotal > 0 ? Math.round(discountAmount * (row.amount / finalTotal)) : 0
+          assignedDiscount += share
+          return share
+        })
+
+        const salesToInsert: Record<string, unknown>[] = rows.map((row, idx) => ({
+          store_id: storeId,
+          employee_id: employeeId,
+          branch_id: branchId,
+          description: row.description,
+          payment_method: row.method,
+          total_amount: row.amount,
+          client_id: clientId,
+          cash_session_id: cashSessionId,
+          discount_type: discountType,
+          discount_value: discountType ? parseFloat(discountValue || '0') : null,
+          discount_amount: rowDiscounts[idx],
+        }))
 
         const { data: insertedSales, error } = await supabase.from('sales').insert(salesToInsert).select('id')
         if (error) throw error
@@ -351,14 +418,13 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
           clientPhone: clientPhone.trim() || null,
           createdAt: new Date().toISOString(),
           products: receiptProducts,
-          payments: [
-            ...(cashNum > 0     ? [{ method: 'cash'     as const, amount: cashNum }]     : []),
-            ...(transferNum > 0 ? [{ method: 'transfer' as const, amount: transferNum }] : []),
-            ...(cardNum > 0     ? [{ method: 'card'     as const, amount: cardNum }]     : []),
-          ],
+          payments: rows.map(r => ({ method: r.method, amount: r.amount })),
           totalAmount: cashNum + transferNum + cardNum,
           isCombined: true,
           paperWidth,
+          subtotal: subtotalBeforeDiscount,
+          discountLabel,
+          discountAmount,
         })
       } else {
         const { data: inserted, error } = await supabase
@@ -369,9 +435,12 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
             branch_id: branchId,
             description: compiledDesc,
             payment_method: paymentMethod,
-            total_amount: grandTotal,
+            total_amount: finalTotal,
             client_id: clientId,
             cash_session_id: cashSessionId,
+            discount_type: discountType,
+            discount_value: discountType ? parseFloat(discountValue || '0') : null,
+            discount_amount: discountAmount,
           })
           .select('id').single()
         if (error) throw error
@@ -388,10 +457,13 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
           clientPhone: clientPhone.trim() || null,
           createdAt: new Date().toISOString(),
           products: receiptProducts,
-          payments: [{ method: paymentMethod, amount: grandTotal }],
-          totalAmount: grandTotal,
+          payments: [{ method: paymentMethod, amount: finalTotal }],
+          totalAmount: finalTotal,
           isCombined: false,
           paperWidth,
+          subtotal: subtotalBeforeDiscount,
+          discountLabel,
+          discountAmount,
         })
       }
 
@@ -416,18 +488,24 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
       return
     }
 
-    if (grandTotal <= 0) {
+    if (finalTotal <= 0) {
       showToast('El total debe ser mayor a $0', 'error')
       return
     }
 
     if (isCombined) {
       const combinedTotal = cashNum + transferNum + cardNum
-      if (combinedTotal !== grandTotal) {
-        showToast(`La suma combinada ($${formatCLP(combinedTotal)}) no coincide con el total ($${formatCLP(grandTotal)})`, 'error')
+      if (combinedTotal !== finalTotal) {
+        showToast(`La suma combinada ($${formatCLP(combinedTotal)}) no coincide con el total ($${formatCLP(finalTotal)})`, 'error')
         return
       }
     }
+
+    setShowConfirmDialog(true)
+  }
+
+  const handleConfirmSale = async () => {
+    setShowConfirmDialog(false)
 
     const catalogProductIds = lines.filter(l => l.productId !== null).map(l => l.productId as string)
 
@@ -605,7 +683,12 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
 
           {/* Product Picker Search Bar */}
           <div className="mb-5">
-            <ProductPicker products={products} onAddLine={addLine} />
+            <ProductPicker
+              ref={productPickerRef}
+              products={products}
+              onAddLine={addLine}
+              onIdleEnter={handleSubmit}
+            />
           </div>
 
           {/* POS Grid: Cart + Submit Panel */}
@@ -621,23 +704,36 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
             </div>
 
             <PosSubmitPanel
-              total={grandTotal}
+              subtotal={subtotalBeforeDiscount}
               paymentMethod={paymentMethod}
               isCombined={isCombined}
               splitAmounts={splitAmounts}
               clientName={clientName}
               clientPhone={clientPhone}
               loading={loading}
+              discountType={discountType}
+              discountValue={discountValue}
+              discountAmount={discountAmount}
+              finalTotal={finalTotal}
               onPaymentMethodChange={setPaymentMethod}
               onIsCombinedChange={setIsCombined}
               onSplitAmountsChange={setSplitAmounts}
               onClientNameChange={setClientName}
               onClientPhoneChange={setClientPhone}
+              onDiscountTypeChange={setDiscountType}
+              onDiscountValueChange={setDiscountValue}
               onSubmit={handleSubmit}
             />
           </div>
         </main>
       </div>
+
+      <ConfirmSaleDialog
+        open={showConfirmDialog}
+        total={finalTotal}
+        onConfirm={handleConfirmSale}
+        onCancel={() => setShowConfirmDialog(false)}
+      />
 
       <StockWarningDialog
         items={stockWarning}

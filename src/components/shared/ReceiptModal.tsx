@@ -30,6 +30,9 @@ export interface ReceiptData {
   totalAmount: number
   isCombined: boolean
   paperWidth?: '58mm' | '80mm'
+  subtotal?: number
+  discountLabel?: string | null
+  discountAmount?: number
 }
 
 interface ReceiptModalProps {
@@ -281,6 +284,20 @@ export function ReceiptModal({ open, onClose, data }: ReceiptModalProps) {
                   ))}
                 </tbody>
               </table>
+
+              {/* Subtotal / Discount (only when a discount was applied) */}
+              {!!data.discountAmount && data.discountAmount > 0 && (
+                <>
+                  <div className="row flex justify-between text-[10px] pt-1">
+                    <span className="label text-zinc-500">Subtotal:</span>
+                    <span className="bold font-semibold">{fmt(data.subtotal ?? data.totalAmount + data.discountAmount)}</span>
+                  </div>
+                  <div className="row flex justify-between text-[10px]">
+                    <span className="label text-zinc-500">{data.discountLabel ?? 'Descuento'}:</span>
+                    <span className="bold font-semibold">-{fmt(data.discountAmount)}</span>
+                  </div>
+                </>
+              )}
 
               {/* Total */}
               <div className="total-row flex justify-between items-center pt-1.5 mt-1 border-t-2 border-zinc-800 dark:border-zinc-300">

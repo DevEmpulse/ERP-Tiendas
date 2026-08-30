@@ -1,15 +1,24 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
 import { Input } from '@/components/ui/input'
 import { Search, Plus, Package, Tag, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { CartLine, PosProduct } from './types'
 
+export interface ProductPickerHandle {
+  focus: () => void
+}
+
 interface ProductPickerProps {
   products: PosProduct[]
   onAddLine: (line: Omit<CartLine, 'lineId' | 'subtotal'>) => void
+  onIdleEnter?: () => void
 }
+
+// Max gap (ms) between two "Enter" presses on an empty search box for the
+// second press to count as a double-Enter submit trigger.
+const DOUBLE_ENTER_THRESHOLD_MS = 600
 
 interface UnlistedForm {
   name: string
@@ -24,13 +33,24 @@ function formatCLP(value: number): string {
   }).format(value)
 }
 
-export function ProductPicker({ products, onAddLine }: ProductPickerProps) {
+export const ProductPicker = forwardRef<ProductPickerHandle, ProductPickerProps>(function ProductPicker(
+  { products, onAddLine, onIdleEnter },
+  ref
+) {
   const [query, setQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [unlistedForm, setUnlistedForm] = useState<UnlistedForm | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const lastEmptyEnterAtRef = useRef<number>(0)
+
+  useImperativeHandle(ref, () => ({
+    focus: () => {
+      inputRef.current?.focus()
+      setIsOpen(true)
+    },
+  }))
 
   const q = query.trim().toLowerCase()
   const filtered = q.length === 0
@@ -41,7 +61,6 @@ export function ProductPicker({ products, onAddLine }: ProductPickerProps) {
 
   // Reset selection on query change
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the highlighted index whenever the search query changes
     setSelectedIndex(0)
   }, [query])
 
@@ -88,6 +107,23 @@ export function ProductPicker({ products, onAddLine }: ProductPickerProps) {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Double-Enter-to-submit: only applies when the search box is empty
+    // (nothing typed, nothing to select). Two Enter presses within
+    // DOUBLE_ENTER_THRESHOLD_MS trigger onIdleEnter; otherwise this arms the
+    // timer and does nothing else. When there IS a query, this branch is
+    // skipped entirely and the existing Enter behavior below runs unchanged.
+    if (e.key === 'Enter' && query.trim() === '') {
+      e.preventDefault()
+      const now = Date.now()
+      if (now - lastEmptyEnterAtRef.current <= DOUBLE_ENTER_THRESHOLD_MS) {
+        lastEmptyEnterAtRef.current = 0
+        onIdleEnter?.()
+      } else {
+        lastEmptyEnterAtRef.current = now
+      }
+      return
+    }
+
     if (!isOpen) {
       if (e.key === 'ArrowDown' || e.key === 'Enter') {
         setIsOpen(true)
@@ -290,4 +326,4 @@ export function ProductPicker({ products, onAddLine }: ProductPickerProps) {
       )}
     </div>
   )
-}
+})

@@ -367,6 +367,9 @@ export default function EncargadoPage() {
             storeId={userProfile?.store_id || null}
             branchId={userProfile?.branch_id || null}
             branchName={branchName}
+            role="encargado"
+            userId={userProfile?.id || null}
+            userBranchId={userProfile?.branch_id || null}
           />
         )
       case 'cash':

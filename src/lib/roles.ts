@@ -24,6 +24,24 @@ export const ANALYTICS_ROLES = ['admin', 'encargado'] as const
 // check, which predates the 4-role model.
 export const SALES_REPORT_ROLES = ['encargado', 'caja', 'employee'] as const
 
+// Purchases (migration.sql §23): who may record, edit, and void a purchase.
+// Same membership as CATALOG_WRITE_ROLES today (resolved fork 2) but a distinct
+// constant: a purchase writes cost, and the two gates may diverge later.
+// `stock` is deliberately absent — it may move quantities via adjust_branch_stock,
+// never record what was paid.
+export const PURCHASE_ROLES = ['admin', 'superadmin', 'encargado'] as const
+
+export function canRecordPurchase(
+  role: string | null | undefined,
+  userBranchId: string | null | undefined,
+  targetBranchId: string | null | undefined
+): boolean {
+  if (!role || !(PURCHASE_ROLES as readonly string[]).includes(role)) return false
+  if (role === 'admin' || role === 'superadmin') return true
+  if (!targetBranchId || !userBranchId) return false
+  return userBranchId === targetBranchId
+}
+
 export function canOperateCashSession(
   role: string | null | undefined,
   userBranchId: string | null | undefined,

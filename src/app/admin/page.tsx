@@ -419,6 +419,8 @@ export default function AdminPage() {
             storeId={userProfile?.store_id || null}
             branchId={selectedBranchId}
             branchName={branches.find((b) => b.id === selectedBranchId)?.name}
+            role="admin"
+            userId={userProfile?.id || null}
           />
         )
       case 'cash':

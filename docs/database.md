@@ -148,6 +148,37 @@ Inmutable en las mismas dos capas que `stock_movements`: RLS sin políticas `UPD
 
 `GRANT EXECUTE ... TO authenticated` + `REVOKE EXECUTE ... FROM PUBLIC, anon` porque toda función `SECURITY DEFINER` en `public` es ejecutable por `PUBLIC` (y por herencia `anon`/`authenticated`) salvo que se revoque explícitamente.
 
+### 14. `purchases` (Compras a Proveedor) — sección 23
+Header de una compra a proveedor, mirror de `sales` (:34) con el mismo convenio de FK compuesta de coherencia de sucursal (15.4/17.1). **Sin `UPDATE`**: una corrección es borrar y re-crear (ver `purchase_items` abajo), igual que la edición de una venta.
+- `id` (`uuid`, PK, `gen_random_uuid()`).
+- `store_id` (`uuid`, FK -> `stores.id` ON DELETE CASCADE, NOT NULL).
+- `branch_id` (`uuid`, NOT NULL): `FOREIGN KEY (store_id, branch_id) REFERENCES branches (store_id, id) ON DELETE RESTRICT` — a diferencia de `branch_stock`, aquí es `RESTRICT` (historial de costos, ver sección 21.2).
+- `supplier_name` (`text`, NULL): texto libre, sin tabla de proveedores ni autocompletado.
+- `purchase_date` (`date`, NOT NULL, DEFAULT `CURRENT_DATE`).
+- `note` (`text`, NULL).
+- `created_by` (`uuid`, NULL, FK -> `profiles.id` ON DELETE SET NULL), `created_at` (`timestamptz`, DEFAULT `now()`).
+- **Sin `total_cost`**: el total se suma en el cliente desde `purchase_items` (`purchaseTotal()` en `src/lib/purchasesHelper.ts`) — la vista de historial ya trae las líneas anidadas, así que la columna solo agregaría una clase más de desincronización.
+
+### 15. `purchase_items` (Líneas de Compra) — sección 23
+Forma de columnas mirror de `sale_items` (:75), con dos diferencias deliberadas frente a esa tabla:
+- `product_id` (`uuid`, **NOT NULL**, `ON DELETE RESTRICT`): a diferencia de `sale_items.product_id` (nullable, `SET NULL`), una línea de compra **siempre** apunta a un producto real del catálogo — no existe la vía "producto no listado" que sí tiene `/pos`.
+- `branch_id` (`uuid`, NOT NULL): denormalizado igual que `sale_items.branch_id`, porque la reversión `AFTER DELETE` corre cuando la compra padre ya no existe. Se fija **siempre** desde el header vía el trigger `set_purchase_item_scope()` (`BEFORE INSERT`) — más estricto que `set_sale_item_branch()`, que solo completa un valor `NULL`.
+- `quantity` (`int`, NOT NULL, CHECK `> 0`), `unit_cost` (`numeric(10,2)`, NOT NULL, CHECK `>= 0`), `subtotal` (`numeric(10,2)`, NOT NULL, CHECK `>= 0`), `product_name` (`text`, NOT NULL, copiado al momento de la compra).
+- `purchase_id` (`uuid`, FK -> `purchases.id` ON DELETE CASCADE, NOT NULL): borrar la compra borra sus líneas — es el mecanismo de "anular"/"editar" (ver `docs/features.md`).
+
+**Triggers en `purchase_items`** (todos `SECURITY INVOKER` salvo el de costo):
+1. `set_purchase_item_scope()` (`BEFORE INSERT`): copia `store_id`/`branch_id` desde `purchases` — un `SELECT` bajo RLS, así que un header invisible produce `NULL` y la fila falla por las columnas `NOT NULL` (fail-closed).
+2. `apply_purchase_item_stock()` (`AFTER INSERT` **y** `AFTER DELETE`, mismo `TG_OP`-branching que `apply_sale_item_stock()` de la sección 6 más abajo, línea por línea idéntica salvo el signo): en `INSERT` suma `quantity` a `branch_stock` y escribe `stock_movements` con `reason='purchase'`; en `DELETE` revierte exactamente lo que se **aplicó** (releído de `stock_movements.applied_delta`, nunca la cantidad solicitada) con `reason='purchase_reversal'`. El `GREATEST(...,0)` es un no-op en el sentido de alta (una compra nunca necesita el piso), pero es **load-bearing** en la reversión: si ventas posteriores ya bajaron el stock por debajo de lo comprado, revertir el total violaría el CHECK `current_stock >= 0`.
+3. `apply_purchase_item_cost()` (`AFTER INSERT` solamente, **`SECURITY DEFINER`**): mueve `products.purchase_price` hacia adelante al `unit_cost` de la línea, pero **solo si la compra insertada es la cronológicamente más nueva para ese producto** (comparación `(purchase_date, created_at)`, empates a favor de la fila insertada). `SECURITY DEFINER` es necesario porque `purchase_price` es un escalar **de toda la tienda**: la pregunta "¿es esta la compra más nueva?" debe responderse viendo todas las sucursales, y bajo `SECURITY INVOKER` un `encargado` no vería una compra más nueva de otra sucursal bajo su RLS y sobrescribiría el costo incorrectamente. No hay escalamiento de privilegio real: solo `PURCHASE_ROLES` puede insertar una fila de `purchase_items`, y ese conjunto es exactamente el conjunto de escritura de `products`. Ni un `DELETE` (anular) ni el borrado de una edición revierten nunca este escalar — una corrección es una nueva compra o una edición directa del catálogo.
+
+### `stock_movements.purchase_item_id` + `reason` ampliado — sección 23.3
+- `purchase_item_id` (`uuid`, NULL, **sin FK**, mismo motivo que `sale_item_id`: la reversión se escribe cuando la línea ya no existe).
+- `reason` CHECK ampliado de 5 a 7 valores: se agregan `'purchase'` y `'purchase_reversal'` a la lista existente (`sale`, `sale_reversal`, `manual_adjustment`, `restock`, `import_ingress`).
+- `stock_movements_one_source_check` (CHECK nuevo): `sale_item_id IS NULL OR purchase_item_id IS NULL` — una fila del ledger pertenece a lo sumo a un documento origen.
+
+### `PURCHASE_ROLES` (`src/lib/roles.ts`) — sección 23
+`['admin', 'superadmin', 'encargado']`, misma membresía que `CATALOG_WRITE_ROLES` hoy pero una constante separada (una compra escribe costo, un gate distinto que puede divergir más adelante). `stock` queda deliberadamente afuera: puede mover cantidades vía `adjust_branch_stock`, nunca registrar lo que se pagó. `canRecordPurchase(role, userBranchId, targetBranchId)` replica exactamente la forma de `canOperateCashSession`.
+
 ### 6. `allowed_admins` (Lista Blanca de Administradores)
 Gestionada por el `superadmin` para habilitar el registro de nuevas tiendas.
 - `id` (`uuid`, PK, `gen_random_uuid()`): ID del registro.
@@ -274,6 +305,7 @@ Antes de este follow-up, `min_stock` no era configurable desde ninguna UI y qued
 | `stock_movements` | SELECT + INSERT (Forma B) | Lectura e inserción según ámbito de sucursal; inmutable sin UPDATE/DELETE |
 | `cash_sessions` | SELECT + INSERT (Forma B) | Lectura por sucursal (admin/superadmin global); abrir es un INSERT con `opened_by` fijado al llamante; sin política UPDATE/DELETE — cerrar es exclusivamente vía RPC `close_cash_session` |
 | `cash_movements` | SELECT + INSERT (Forma B) | Lectura e inserción según ámbito de sucursal; inmutable sin UPDATE/DELETE (RLS + `REVOKE`), igual que `stock_movements` |
+| `purchases` / `purchase_items` | SELECT + INSERT + DELETE (Forma B, escritura acotada) | `SELECT` es Forma B pura. `INSERT`/`DELETE` reusan el predicado de tienda de Forma B pero reemplazan el brazo de sucursal por `encargado` únicamente (más angosto que `stock_movements`, que admite `caja`/`stock`/`employee`); `stock` queda afuera a propósito. Sin política `UPDATE` en ninguna de las dos tablas — editar es borrar y re-crear |
 
 ### Formas de Predicados RLS
 

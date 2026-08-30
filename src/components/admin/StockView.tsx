@@ -48,6 +48,10 @@ import { useToast, Toaster } from '@/components/ui/toast'
 import { ProductLabelPrinter, type LabelProduct } from './ProductLabel'
 import { ProductImportDialog } from './ProductImportDialog'
 import { ProductExportButton } from './ProductExportButton'
+import { PurchaseModal } from './PurchaseModal'
+import { PurchasesHistory } from './PurchasesHistory'
+import { canRecordPurchase } from '@/lib/roles'
+import type { Purchase } from '@/lib/purchasesHelper'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -55,6 +59,9 @@ interface StockViewProps {
   storeId: string | null
   branchId: string | null
   branchName?: string
+  role?: string | null
+  userId?: string | null
+  userBranchId?: string | null
 }
 
 interface Category {
@@ -75,7 +82,7 @@ interface Product {
 
 interface StockMovement {
   id: string
-  reason: 'sale' | 'sale_reversal' | 'manual_adjustment' | 'restock' | 'import_ingress'
+  reason: 'sale' | 'sale_reversal' | 'manual_adjustment' | 'restock' | 'import_ingress' | 'purchase' | 'purchase_reversal'
   quantity_delta: number
   applied_delta: number
   resulting_balance: number
@@ -100,6 +107,8 @@ const REASON_LABELS: Record<StockMovement['reason'], string> = {
   manual_adjustment: 'Ajuste manual',
   restock: 'Reposición',
   import_ingress: 'Ingreso por importación',
+  purchase: 'Compra',
+  purchase_reversal: 'Reversión de compra',
 }
 
 const emptyPriceRuleForm = () => ({
@@ -123,11 +132,11 @@ const formatCLP = (value: number) =>
     maximumFractionDigits: 0,
   }).format(value)
 
-export function StockView({ storeId, branchId, branchName }: StockViewProps) {
+export function StockView({ storeId, branchId, branchName, role = null, userId = null, userBranchId = null }: StockViewProps) {
   const supabase = createClient()
   const { toasts, toast, dismiss } = useToast()
 
-  const [activeTab, setActiveTab] = useState<'productos' | 'precios'>('productos')
+  const [activeTab, setActiveTab] = useState<'productos' | 'precios' | 'compras'>('productos')
 
   // ── Products tab state ─────────────────────────────────────────────────────
   const [products, setProducts] = useState<Product[]>([])
@@ -698,6 +707,69 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
     }
   }
 
+  // ── Purchases tab (Compras — migration.sql §23) ────────────────────────────
+
+  const [purchases, setPurchases] = useState<Purchase[]>([])
+  const [purchasesLoading, setPurchasesLoading] = useState(true)
+  const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false)
+  const [editingPurchase, setEditingPurchase] = useState<Purchase | null>(null)
+
+  const canManagePurchases = canRecordPurchase(role, userBranchId, branchId)
+
+  const loadPurchases = useCallback(async () => {
+    if (!storeId) return
+    try {
+      const { data, error } = await supabase
+        .from('purchases')
+        .select('id, store_id, branch_id, supplier_name, purchase_date, note, created_by, created_at, purchase_items(id, product_id, product_name, quantity, unit_cost, subtotal)')
+        .order('purchase_date', { ascending: false })
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      setPurchases((data as unknown as Purchase[]) || [])
+    } catch (err: unknown) {
+      console.error('Error loading purchases:', err)
+    } finally {
+      setPurchasesLoading(false)
+    }
+  }, [storeId, supabase])
+
+  useEffect(() => {
+    let ignore = false
+    async function run() {
+      if (!storeId || activeTab !== 'compras') return
+      try {
+        const { data, error } = await supabase
+          .from('purchases')
+          .select('id, store_id, branch_id, supplier_name, purchase_date, note, created_by, created_at, purchase_items(id, product_id, product_name, quantity, unit_cost, subtotal)')
+          .order('purchase_date', { ascending: false })
+          .order('created_at', { ascending: false })
+        if (error) throw error
+        if (!ignore) setPurchases((data as unknown as Purchase[]) || [])
+      } catch (err: unknown) {
+        console.error('Error loading purchases:', err)
+      } finally {
+        if (!ignore) setPurchasesLoading(false)
+      }
+    }
+    run()
+    return () => { ignore = true }
+  }, [storeId, activeTab, supabase])
+
+  const openCreatePurchase = () => {
+    setEditingPurchase(null)
+    setIsPurchaseModalOpen(true)
+  }
+
+  const openEditPurchase = (purchase: Purchase) => {
+    setEditingPurchase(purchase)
+    setIsPurchaseModalOpen(true)
+  }
+
+  const handlePurchaseSuccess = async () => {
+    await loadPurchases()
+    await loadProducts()
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -711,6 +783,18 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
         onClose={() => setIsImportOpen(false)}
         storeId={storeId}
         onImported={handleImported}
+      />
+
+      {/* Purchase create / edit modal (Compras tab) */}
+      <PurchaseModal
+        isOpen={isPurchaseModalOpen}
+        onOpenChange={setIsPurchaseModalOpen}
+        storeId={storeId}
+        branchId={branchId}
+        createdBy={userId}
+        products={products.map((p) => ({ id: p.id, name: p.name, purchase_price: p.purchase_price }))}
+        purchaseToEdit={editingPurchase}
+        onSuccess={handlePurchaseSuccess}
       />
 
       {/* Deactivate/Reactivate product confirm */}
@@ -1169,6 +1253,18 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
           >
             Precios Especiales
           </button>
+          {canManagePurchases && (
+            <button
+              onClick={() => setActiveTab('compras')}
+              className={`px-4 py-2.5 text-sm font-semibold cursor-pointer border-b-2 -mb-px transition-colors ${
+                activeTab === 'compras'
+                  ? 'border-zinc-900 text-zinc-900 dark:border-zinc-50 dark:text-zinc-50'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
+              }`}
+            >
+              Compras
+            </button>
+          )}
         </div>
 
         {activeTab === 'productos' && (
@@ -1647,6 +1743,39 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
                 </p>
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'compras' && canManagePurchases && (
+          <div className="space-y-6">
+            {/* Header */}
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+                  <PackagePlus className="h-5 w-5 text-zinc-400" />
+                  Compras
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                  Registrá lo que le comprás a tus proveedores: sube el stock y actualiza el costo actual.
+                </p>
+              </div>
+              <Button
+                onClick={openCreatePurchase}
+                className="h-9 px-4 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 cursor-pointer text-xs font-semibold flex items-center gap-1.5 shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                Nueva Compra
+              </Button>
+            </div>
+
+            <PurchasesHistory
+              purchases={purchases}
+              loading={purchasesLoading}
+              role={role}
+              userBranchId={userBranchId}
+              onEdit={openEditPurchase}
+              onPurchasesChange={handlePurchaseSuccess}
+            />
           </div>
         )}
       </div>

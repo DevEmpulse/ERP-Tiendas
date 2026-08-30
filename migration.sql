@@ -2499,4 +2499,341 @@ ALTER TABLE public.sales
 -- Rollback (do not run automatically):
 -- ALTER TABLE public.sales DROP COLUMN IF EXISTS discount_amount, DROP COLUMN IF EXISTS discount_value, DROP COLUMN IF EXISTS discount_type;
 
+-- ==============================================================================
+-- 23. PURCHASES — supplier purchase header/lines, trigger-driven stock increase
+-- ==============================================================================
+
+-- 23.1 purchases. Header mirrors sales (:29-38) with the composite branch
+-- coherence FK convention from 15.4/17.1. No UPDATE path exists: a correction is
+-- delete + re-insert (see design D5), exactly like SaleModal.tsx:377-386.
+CREATE TABLE IF NOT EXISTS public.purchases (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id      uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  branch_id     uuid NOT NULL,
+  supplier_name text,
+  purchase_date date NOT NULL DEFAULT CURRENT_DATE,
+  note          text,
+  created_by    uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (store_id, branch_id) REFERENCES public.branches (store_id, id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS purchases_store_id_idx ON public.purchases (store_id);
+CREATE INDEX IF NOT EXISTS purchases_branch_date_idx
+  ON public.purchases (branch_id, purchase_date DESC, created_at DESC);
+
+-- 23.2 purchase_items. Column shape mirrors sale_items (:476-486). branch_id is
+-- denormalized for the same reason as sale_items.branch_id (:892-894): the AFTER
+-- DELETE reversal runs once the parent purchase is already gone. Here it is NOT
+-- NULL from day one (no pre-branches legacy rows exist) and is pinned by 23.5.
+CREATE TABLE IF NOT EXISTS public.purchase_items (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id     uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  purchase_id  uuid NOT NULL REFERENCES public.purchases(id) ON DELETE CASCADE,
+  branch_id    uuid NOT NULL,
+  product_id   uuid NOT NULL,
+  product_name text NOT NULL,
+  quantity     int NOT NULL CHECK (quantity > 0),
+  unit_cost    numeric(10,2) NOT NULL CHECK (unit_cost >= 0),
+  subtotal     numeric(10,2) NOT NULL CHECK (subtotal >= 0),
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (store_id, branch_id)  REFERENCES public.branches (store_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (store_id, product_id) REFERENCES public.products (store_id, id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS purchase_items_purchase_id_idx ON public.purchase_items (purchase_id);
+CREATE INDEX IF NOT EXISTS purchase_items_product_id_idx  ON public.purchase_items (product_id);
+CREATE INDEX IF NOT EXISTS purchase_items_store_id_idx    ON public.purchase_items (store_id);
+
+-- 23.3 stock_movements linkage + reason widening. purchase_item_id has NO FK, for
+-- the same reason sale_item_id has none (:821-823): the reversal row is written
+-- once the line is already gone.
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS purchase_item_id uuid;
+CREATE INDEX IF NOT EXISTS stock_movements_purchase_item_id_idx
+  ON public.stock_movements (purchase_item_id) WHERE purchase_item_id IS NOT NULL;
+
+-- The target is the auto-named inline column CHECK created at :830-831 and never
+-- since altered. VERIFIED THE REAL NAME AGAINST PRODUCTION BEFORE RUNNING (orchestrator, Phase 0):
+--   SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+--    WHERE conrelid = 'public.stock_movements'::regclass AND contype = 'c';
+-- If the name differs, DROP ... IF EXISTS silently no-ops, the old 5-value CHECK
+-- stays in force, and every 'purchase' insert is rejected at runtime.
+ALTER TABLE public.stock_movements DROP CONSTRAINT IF EXISTS stock_movements_reason_check;
+ALTER TABLE public.stock_movements ADD  CONSTRAINT stock_movements_reason_check CHECK (reason IN
+  ('sale', 'sale_reversal', 'manual_adjustment', 'restock', 'import_ingress',
+   'purchase', 'purchase_reversal'));
+
+-- A ledger row belongs to at most one source document.
+ALTER TABLE public.stock_movements DROP CONSTRAINT IF EXISTS stock_movements_one_source_check;
+ALTER TABLE public.stock_movements ADD  CONSTRAINT stock_movements_one_source_check
+  CHECK (sale_item_id IS NULL OR purchase_item_id IS NULL);
+
+-- 23.4 RLS — Shape B, verb-split, INSERT/DELETE narrowed to PURCHASE_ROLES
+--
+-- SELECT is plain Shape B (:851-866). INSERT/DELETE reuse Shape B's store predicate but
+-- replace the branch arm's role list with `encargado` only — narrower than
+-- `stock_movements`' own set, which admits `caja`/`stock`/`employee` at their branch.
+-- `stock` is excluded on purpose (fork 2: it may move quantities, never record cost).
+ALTER TABLE public.purchases      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_items ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can read purchases in their branch" ON public.purchases;
+CREATE POLICY "Users can read purchases in their branch" ON public.purchases
+  FOR SELECT TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+DROP POLICY IF EXISTS "Purchase managers can create purchases in their scope" ON public.purchases;
+CREATE POLICY "Purchase managers can create purchases in their scope" ON public.purchases
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND created_by = (select auth.uid())
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+    )
+  );
+
+DROP POLICY IF EXISTS "Purchase managers can delete purchases in their scope" ON public.purchases;
+CREATE POLICY "Purchase managers can delete purchases in their scope" ON public.purchases
+  FOR DELETE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can read purchase items in their branch" ON public.purchase_items;
+CREATE POLICY "Users can read purchase items in their branch" ON public.purchase_items
+  FOR SELECT TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR branch_id = public.get_current_user_branch_id()
+    )
+  );
+
+DROP POLICY IF EXISTS "Purchase managers can create purchase items in their scope" ON public.purchase_items;
+CREATE POLICY "Purchase managers can create purchase items in their scope" ON public.purchase_items
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+    )
+  );
+
+DROP POLICY IF EXISTS "Purchase managers can delete purchase items in their scope" ON public.purchase_items;
+CREATE POLICY "Purchase managers can delete purchase items in their scope" ON public.purchase_items
+  FOR DELETE TO authenticated
+  USING (
+    store_id = public.get_current_user_store_id()
+    AND (
+      public.get_current_user_role() IN ('admin', 'superadmin')
+      OR (public.get_current_user_role() = 'encargado'
+          AND branch_id = public.get_current_user_branch_id())
+    )
+  );
+-- No UPDATE policy on either table: RLS default-denies the verb (23.8 also
+-- revokes the privilege), which is what makes delete-then-recreate the only
+-- correction path.
+--
+-- purchase_items' INSERT WITH CHECK sees the values AFTER the BEFORE ROW trigger, so
+-- the header-pinned branch_id/store_id are what get validated — a client that sends a
+-- foreign branch_id has it overwritten first, then checked.
+
+-- 23.5 Scope pinning. Stricter than set_sale_item_branch (:901-911), which only
+-- fills a NULL: here both columns are ALWAYS taken from the header, so a line can
+-- never be attributed to a different branch or store than its own purchase. The
+-- SELECT runs under RLS, so an invisible header yields NULLs and the NOT NULL
+-- columns fail the insert closed.
+CREATE OR REPLACE FUNCTION public.set_purchase_item_scope()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public
+AS $$
+BEGIN
+  SELECT p.store_id, p.branch_id INTO NEW.store_id, NEW.branch_id
+    FROM public.purchases p WHERE p.id = NEW.purchase_id;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_purchase_item_set_scope ON public.purchase_items;
+CREATE TRIGGER on_purchase_item_set_scope
+  BEFORE INSERT ON public.purchase_items
+  FOR EACH ROW EXECUTE FUNCTION public.set_purchase_item_scope();
+
+-- 23.6 Purchase line -> branch stock. One function, both directions. Structurally
+-- identical to apply_sale_item_stock() (:919-968); the ONLY semantic difference is
+-- the sign of the INSERT delta.
+--
+-- On GREATEST(): a purchase INSERT can never need the floor (v_before >= 0 and
+-- v_delta > 0), so it is a no-op there — but it is LOAD-BEARING on DELETE, which
+-- is the decreasing direction: reversing 5 units from a balance the sale side has
+-- since drawn down to 2 would otherwise violate branch_stock's
+-- `current_stock >= 0` CHECK. The clamp is therefore kept verbatim, and
+-- applied_delta records what was truly applied (-2 in that example), exactly
+-- mirroring how the sales trigger clamps an oversell on its own INSERT side.
+CREATE OR REPLACE FUNCTION public.apply_purchase_item_stock()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public
+AS $$
+DECLARE
+  v_item public.purchase_items%ROWTYPE;
+  v_delta int; v_before int; v_after int; v_prior_applied int;
+BEGIN
+  IF TG_OP = 'INSERT' THEN v_item := NEW; ELSE v_item := OLD; END IF;
+
+  IF v_item.product_id IS NULL OR v_item.branch_id IS NULL THEN RETURN NULL; END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    v_delta := v_item.quantity;                 -- a purchase ADDS units
+  ELSE
+    -- Reverse what was APPLIED, not what was requested (sales precedent :935-942).
+    SELECT m.applied_delta INTO v_prior_applied
+      FROM public.stock_movements m
+     WHERE m.purchase_item_id = v_item.id AND m.reason = 'purchase'
+     ORDER BY m.created_at DESC LIMIT 1;
+    IF v_prior_applied IS NULL THEN RETURN NULL; END IF;   -- nothing was ever applied
+    v_delta := -v_prior_applied;
+  END IF;
+
+  IF v_delta = 0 THEN RETURN NULL; END IF;
+
+  INSERT INTO public.branch_stock (store_id, branch_id, product_id, current_stock)
+  VALUES (v_item.store_id, v_item.branch_id, v_item.product_id, 0)
+  ON CONFLICT (branch_id, product_id) DO UPDATE SET updated_at = now()
+  RETURNING current_stock INTO v_before;
+
+  UPDATE public.branch_stock
+     SET current_stock = GREATEST(v_before + v_delta, 0), updated_at = now()
+   WHERE branch_id = v_item.branch_id AND product_id = v_item.product_id
+  RETURNING current_stock INTO v_after;
+
+  INSERT INTO public.stock_movements
+    (store_id, branch_id, product_id, purchase_item_id, reason,
+     quantity_delta, applied_delta, resulting_balance)
+  VALUES
+    (v_item.store_id, v_item.branch_id, v_item.product_id, v_item.id,
+     CASE WHEN TG_OP = 'INSERT' THEN 'purchase' ELSE 'purchase_reversal' END,
+     v_delta, v_after - v_before, v_after);
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_purchase_item_inserted ON public.purchase_items;
+CREATE TRIGGER on_purchase_item_inserted
+  AFTER INSERT ON public.purchase_items
+  FOR EACH ROW EXECUTE FUNCTION public.apply_purchase_item_stock();
+
+DROP TRIGGER IF EXISTS on_purchase_item_deleted ON public.purchase_items;
+CREATE TRIGGER on_purchase_item_deleted
+  AFTER DELETE ON public.purchase_items
+  FOR EACH ROW EXECUTE FUNCTION public.apply_purchase_item_stock();
+
+-- 23.7 Purchase line -> products.purchase_price (design D2/D3/D4). INSERT only:
+-- a void or an edit's delete NEVER reverts the scalar (resolved default
+-- q2b_purchase_price_reversion_on_edit_void).
+--
+-- SECURITY DEFINER because purchase_price is a STORE-WIDE scalar: the "is this
+-- the newest purchase for this product?" lookback must see every branch, and an
+-- encargado's RLS view stops at their own. Tenant scoping is therefore restated
+-- explicitly on both the lookback and the UPDATE. This grants no new power: only
+-- PURCHASE_ROLES can insert a purchase_items row at all, and that set is exactly
+-- the products write set (:1362-1371).
+CREATE OR REPLACE FUNCTION public.apply_purchase_item_cost()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  v_this_date date; v_this_created timestamptz;
+  v_max_date  date; v_max_created  timestamptz;
+BEGIN
+  IF NEW.product_id IS NULL THEN RETURN NULL; END IF;
+
+  SELECT p.purchase_date, p.created_at INTO v_this_date, v_this_created
+    FROM public.purchases p
+   WHERE p.id = NEW.purchase_id AND p.store_id = NEW.store_id;
+  IF v_this_date IS NULL THEN RETURN NULL; END IF;
+
+  -- Newest OTHER purchase line for the same product, store-wide.
+  SELECT p.purchase_date, p.created_at INTO v_max_date, v_max_created
+    FROM public.purchase_items pi
+    JOIN public.purchases p ON p.id = pi.purchase_id
+   WHERE pi.product_id = NEW.product_id
+     AND pi.store_id   = NEW.store_id
+     AND pi.id <> NEW.id
+   ORDER BY p.purchase_date DESC, p.created_at DESC
+   LIMIT 1;
+
+  -- Ties go to the row being inserted, so re-inserting the newest purchase during
+  -- an edit still applies its corrected cost.
+  IF v_max_date IS NULL
+     OR (v_this_date, v_this_created) >= (v_max_date, v_max_created) THEN
+    UPDATE public.products
+       SET purchase_price = NEW.unit_cost, updated_at = now()
+     WHERE id = NEW.product_id AND store_id = NEW.store_id;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_purchase_item_cost ON public.purchase_items;
+CREATE TRIGGER on_purchase_item_cost
+  AFTER INSERT ON public.purchase_items
+  FOR EACH ROW EXECUTE FUNCTION public.apply_purchase_item_cost();
+
+-- 23.8 Grants (revoke-then-grant per §17.7 / §21.1)
+GRANT  SELECT, INSERT, DELETE ON public.purchases      TO authenticated;
+GRANT  SELECT, INSERT, DELETE ON public.purchase_items TO authenticated;
+REVOKE UPDATE ON public.purchases      FROM authenticated, anon;
+REVOKE UPDATE ON public.purchase_items FROM authenticated, anon;
+
+REVOKE EXECUTE ON FUNCTION public.set_purchase_item_scope()  FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.set_purchase_item_scope()  TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.apply_purchase_item_stock() FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.apply_purchase_item_stock() TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.apply_purchase_item_cost()  FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.apply_purchase_item_cost()  TO authenticated;
+-- Trigger functions are not usefully callable directly (they raise outside a
+-- trigger context), but the grant is kept so no PostgreSQL version can fail an
+-- insert on a missing EXECUTE privilege, and the REVOKE matches §21.1's rule that
+-- every function this project ships is closed to PUBLIC/anon.
+
+-- 23.9 Rollback (do not run automatically) — reverse of section 23, bottom to top:
+-- REVOKE EXECUTE ON FUNCTION public.apply_purchase_item_cost()  FROM authenticated;
+-- REVOKE EXECUTE ON FUNCTION public.apply_purchase_item_stock() FROM authenticated;
+-- REVOKE EXECUTE ON FUNCTION public.set_purchase_item_scope()   FROM authenticated;
+-- DROP TRIGGER  IF EXISTS on_purchase_item_cost      ON public.purchase_items;
+-- DROP TRIGGER  IF EXISTS on_purchase_item_deleted   ON public.purchase_items;
+-- DROP TRIGGER  IF EXISTS on_purchase_item_inserted  ON public.purchase_items;
+-- DROP TRIGGER  IF EXISTS on_purchase_item_set_scope ON public.purchase_items;
+-- DROP FUNCTION IF EXISTS public.apply_purchase_item_cost();
+-- DROP FUNCTION IF EXISTS public.apply_purchase_item_stock();
+-- DROP FUNCTION IF EXISTS public.set_purchase_item_scope();
+-- DROP TABLE    IF EXISTS public.purchase_items CASCADE;
+-- DROP TABLE    IF EXISTS public.purchases      CASCADE;
+-- ALTER TABLE public.stock_movements DROP CONSTRAINT IF EXISTS stock_movements_one_source_check;
+-- DROP INDEX IF EXISTS public.stock_movements_purchase_item_id_idx;
+-- ALTER TABLE public.stock_movements DROP COLUMN IF EXISTS purchase_item_id;
+-- Narrowing the reason CHECK back to 5 values REQUIRES zero rows with
+-- reason IN ('purchase','purchase_reversal'); delete them first or leave the
+-- widened CHECK in place (harmless when unused):
+-- ALTER TABLE public.stock_movements DROP CONSTRAINT IF EXISTS stock_movements_reason_check;
+-- ALTER TABLE public.stock_movements ADD  CONSTRAINT stock_movements_reason_check CHECK (reason IN
+--   ('sale', 'sale_reversal', 'manual_adjustment', 'restock', 'import_ingress'));
+
 

@@ -43,7 +43,7 @@ El componente `ReceiptModal.tsx` se encarga de renderizar e imprimir los comprob
 
 ## 📦 3. Catálogo de Productos y Stock por Sucursal (Stock Phase 2)
 
-`StockView.tsx` tiene dos pestañas: **Productos** (catálogo + stock, esta sección) y **Precios Especiales** (sección 3.4, sin cambios de comportamiento).
+`StockView.tsx` tiene hasta tres pestañas: **Productos** (catálogo + stock, esta sección), **Precios Especiales** (sección 3.4, sin cambios de comportamiento) y **Compras** (sección 3.5, sección 23, visible solo para `admin`/`superadmin`/`encargado`).
 
 ### Catálogo de productos
 - Alta/edición de productos: nombre, categoría (seleccionable o creable en el momento), precio de costo y precio de venta. **El código de barras nunca se escribe a mano** — se genera automáticamente al guardar (ver `docs/database.md`, "Generación de código EAN-8") y se muestra de solo lectura al editar.
@@ -77,6 +77,29 @@ Pestaña **Precios Especiales** de `StockView.tsx` — comportamiento sin cambio
 ### Funcionamiento:
 - **Definición de Regla**: Asigna a un producto (ej. *"Remera"*) una cantidad clave (ej. `12`) con un precio especial paquete (ej. `$50,000`) frente al precio unitario individual (ej. `$5,000`).
 - **Autocompletado en Formulario**: Al registrar una venta, el formulario detecta automáticamente si la cantidad ingresada alcanza una regla promocional activa y ajusta los valores unitarios.
+
+---
+
+## 🚚 3.5. Compras a Proveedor (`PurchaseModal.tsx`, `PurchasesHistory.tsx`) — sección 23
+
+Tercera pestaña **Compras** de `StockView.tsx`, visible solo para `admin`, `superadmin` y `encargado` (`canRecordPurchase`, `src/lib/roles.ts`) — `caja`, `stock` y `employee` no la ven ni pueden operarla, ni siquiera `stock`, que sí puede mover cantidades vía "Ajustar Stock" pero nunca registrar lo que se pagó.
+
+### Registrar una compra
+- Header: proveedor (texto libre, opcional, sin tabla de proveedores), fecha y nota opcional.
+- Líneas repetibles: producto (elegido del catálogo existente — **no** existe la opción "producto no listado" que sí tiene `/pos`, porque `purchase_items.product_id` es obligatorio), cantidad y costo unitario (se autocompleta con el costo actual del producto al elegirlo, editable).
+- Al guardar: sube `branch_stock` de la sucursal de la compra por cada línea, escribe un `stock_movements` por línea con `reason='purchase'`, y mueve `products.purchase_price` al `unit_cost` de cada línea — **siempre que esa compra sea la más nueva registrada para ese producto** (comparando fecha de compra y luego fecha de creación); editar una compra vieja nunca pisa un costo más nuevo.
+
+### Editar una compra
+Igual que `SaleModal.tsx`: **no existe un `UPDATE` real**. Editar borra la compra completa (header + líneas, por cascada) y la vuelve a crear con los datos corregidos (id nuevo). El borrado revierte automáticamente el stock y no toca `products.purchase_price` — el alta que sigue sí lo mueve, con el mismo criterio de "más nueva" de arriba. Antes de re-crear, se verifica que la cantidad de filas realmente borradas coincida con la esperada (`deletePurchaseGroup`, `src/lib/purchasesHelper.ts`, mismo contrato que `deleteSaleGroup`); si un `encargado` intenta editar una compra de otra sucursal, el borrado no afecta filas y la operación se aborta sin re-crear nada, en vez de duplicar la compra.
+
+### Anular una compra
+Solo borra (sin re-crear): revierte el stock ingresado vía `stock_movements` con `reason='purchase_reversal'` y **nunca modifica** `products.purchase_price`, aunque la compra anulada haya sido la que fijó el costo actual — corregir el costo después de anular una compra requiere una nueva compra o una edición directa del catálogo. Misma verificación de cantidad de filas borradas que en la edición, con un mensaje de denegación en vez de un falso éxito.
+
+### Historial (`PurchasesHistory.tsx`)
+Mismo patrón de `SalesHistory.tsx`: filtro de rango de fechas con atajos ("Hoy", "Últimos 7 días", "Últimos 30 días", "Este mes"), tarjetas de resumen (total gastado, cantidad de compras, promedio) y listado ordenado por fecha, más reciente primero. Cada fila tiene acciones de editar y anular, visibles solo si `canRecordPurchase` lo permite para la sucursal de esa compra puntual (un `encargado` no ve las acciones sobre compras de otra sucursal).
+
+### Historial de Movimientos y Ajuste de Stock
+Las secciones **Historial de Movimientos** y **Ajuste de Stock** (3. arriba) ya muestran las razones `'purchase'`/`'purchase_reversal'` con las etiquetas "Compra"/"Reversión de compra" — no aparecen como texto crudo.
 
 ---
 

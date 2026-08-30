@@ -1,0 +1,422 @@
+change: purchases-tracking
+artifact_store: openspec
+session_preflight:
+  pace: interactive
+  delivery_strategy: ask-on-risk
+  review_budget_lines: 400
+phases:
+  explore:
+    status: done
+    artifact: exploration.md
+    note: >
+      sdd-explore agent has no Write tool access; exploration content was
+      returned inline by the agent and persisted to exploration.md by the
+      orchestrator verbatim.
+  propose:
+    status: done
+    artifact: proposal.md
+    note: >
+      Incorporates the 3 user-resolved decision forks and the resolved
+      trigger-based approach without re-litigating them. New capability
+      `purchase-tracking`; product-catalog spec was read and needs NO delta
+      (products.purchase_price behavior is unchanged by this change).
+  spec:
+    status: done
+    artifact: specs/purchase-tracking/spec.md
+    note: >
+      New capability `purchase-tracking`, full spec (no existing spec to
+      delta against). Confirmed by reading openspec/specs/product-catalog/
+      spec.md directly: its "Category and Product Catalog Data Model"
+      requirement only declares purchase_price as a column and owns RLS/
+      soft-delete — it makes no claim about who writes purchase_price or
+      how, so there is no existing requirement text for a MODIFIED block to
+      target. The forward-update behavior is fully owned by the new
+      "Purchase Forward-Updates Current Product Cost" requirement in
+      purchase-tracking; product-catalog needs no delta, confirming the
+      proposal's claim.
+  design:
+    status: done
+    artifact: design.md
+    key_decisions:
+      migration_section: >
+        New migration.sql section 23 (23.1-23.9), appended after section 22
+        (sales discount, :2486-2500) which is the current last section.
+      stock_trigger_mirrors_sales_exactly: >
+        apply_purchase_item_stock() is a line-for-line mirror of
+        apply_sale_item_stock() (:919-968) with ONE semantic difference: the
+        INSERT delta is +quantity instead of -quantity. GREATEST(...,0) is kept
+        verbatim - it is a no-op on the INSERT (increase) side but LOAD-BEARING
+        on the DELETE (reversal) side, where reversing more units than currently
+        remain would otherwise violate branch_stock's current_stock >= 0 CHECK.
+        The DELETE branch reverses the prior applied_delta read back from
+        stock_movements, never the requested quantity, exactly like sales.
+      cost_update_is_a_separate_trigger: >
+        apply_purchase_item_cost() is a SEPARATE AFTER INSERT trigger, not folded
+        into the stock trigger. Two reasons: different lifecycle (stock reverses
+        on DELETE, cost never does) and different security context - the stock
+        trigger stays SECURITY INVOKER (sales precedent), the cost trigger must
+        be SECURITY DEFINER, and one function cannot be both.
+      cost_update_is_chronologically_guarded: >
+        DEVIATION DEV-1, needs user confirmation before apply. The forward-update
+        fires only when the inserted line's purchase is the chronologically
+        newest for that product, compared as (purchase_date, created_at) with
+        ties favouring the inserted row. Unconditional update (the literal
+        proposal/spec wording) would let re-inserting an edited OLD purchase
+        clobber a newer cost, contradicting the spec's own scenario "Voiding an
+        older purchase never retroactively changes current cost" (trigger:
+        "voided OR EDITED"). All spec scenarios still pass under the guard.
+        Override = delete the IF guard in 23.7 and keep the bare UPDATE.
+      cost_trigger_is_security_definer: >
+        products.purchase_price is a STORE-WIDE scalar, so the "is this the
+        newest purchase?" lookback must see every branch; under SECURITY INVOKER
+        an encargado's branch-scoped RLS view cannot see a newer purchase at
+        another branch and would silently overwrite its cost. Tenant scoping is
+        restated explicitly (store_id predicates on both the lookback and the
+        UPDATE). No escalation: only PURCHASE_ROLES can insert a purchase_items
+        row, and that set is exactly the products write set (:1362-1371).
+      purchase_price_never_reverts: >
+        DEV-2, implements q2b default as written: neither an edit's delete nor a
+        void ever reverts products.purchase_price. No lookback, no restoration.
+      reason_check_constraint_name_must_be_verified: >
+        The CHECK is the auto-named inline column constraint from 15.5
+        (:830-831), never altered since - assumed name
+        stock_movements_reason_check. The apply phase MUST verify via
+        pg_constraint BEFORE running the DROP: a wrong name makes DROP ... IF
+        EXISTS a silent no-op, leaves the old 5-value CHECK in force, and every
+        'purchase' insert fails at runtime. Widened to 7 values ('purchase',
+        'purchase_reversal' added).
+      rls_shape_b_narrowed_for_writes: >
+        SELECT is plain Shape B (:851-866). INSERT/DELETE keep Shape B's store
+        predicate but replace the branch arm's role list with 'encargado' only -
+        narrower than stock_movements' own set, which admits caja/stock/employee
+        at their branch. 'stock' is excluded on purpose (fork 2). No UPDATE
+        policy on either table; 23.8 also REVOKEs the UPDATE privilege.
+      edit_replaces_the_whole_purchase: >
+        DEV/D5: editing deletes and recreates the header AND its lines (new id),
+        mirroring SaleModal.tsx:377-386, rather than keeping the header and
+        swapping lines - the latter would require an UPDATE policy on purchases
+        to edit supplier/date/note, breaking the "no UPDATE anywhere" invariant.
+      delete_count_verification_mandatory: >
+        deletePurchaseGroup() in the new src/lib/purchasesHelper.ts returns the
+        identical { deletedIds, error } contract as salesHelper.ts's
+        deleteSaleGroup (:246-255). Both call sites (PurchaseModal edit,
+        PurchasesHistory void) MUST abort on a short count before inserting
+        replacements. This bug class already shipped and was fixed once here.
+      purchase_items_scope_is_header_pinned: >
+        DEV-5: set_purchase_item_scope() ALWAYS overwrites store_id/branch_id
+        from the header (stricter than set_sale_item_branch's fill-if-NULL), so
+        a line can never be attributed to another branch/store. RLS WITH CHECK
+        is evaluated after BEFORE ROW triggers, so the pinned values are what get
+        validated. An invisible header yields NULLs and fails the insert closed.
+      no_total_cost_column: >
+        DEV-3: purchases has NO total_cost column despite sales having
+        total_amount. The history view already fetches nested lines, so the
+        column would add a drift class for nothing; totals are summed client-side
+        via purchaseTotal().
+      strict_deletion_fks: >
+        DEV-4/D7: purchase_items.product_id is NOT NULL with ON DELETE RESTRICT
+        (unlike sale_items' nullable SET NULL - a purchase line always targets a
+        real product and the trigger needs it), and both composite branch FKs use
+        ON DELETE RESTRICT, extending section 21.2's "cost/audit history is never
+        silently destroyed by a branch hard-delete" rule to purchases.
+      purchase_roles_is_its_own_constant: >
+        PURCHASE_ROLES = ['admin','superadmin','encargado'] plus a
+        canRecordPurchase(role, userBranchId, targetBranchId) helper shaped
+        exactly like canOperateCashSession. Same membership as
+        CATALOG_WRITE_ROLES today but kept separate so the two gates can diverge.
+        StockView gains role/userBranchId props; the Compras tab renders only
+        when canRecordPurchase is true (defense in depth - StockView is already
+        reachable only from /admin and /encargado).
+      ui_placement: >
+        StockView.tsx's activeTab union (:130) becomes
+        'productos' | 'precios' | 'compras'; third tab button in the strip at
+        :1151-1172 and a third panel. New PurchasesHistory.tsx mirrors
+        SalesHistory.tsx's date-range + quick-pill + daily-grouped-table
+        structure with per-row Pencil/Trash2 actions; new PurchaseModal.tsx
+        mirrors SaleModal.tsx's repeatable-line-items form. StockView's
+        StockMovement['reason'] union (:78) and REASON_LABELS (:97-103) and
+        StockAdjustmentView's formatReason (:169-184) all gain the two new
+        reasons.
+      review_workload_forecast: >
+        ~1290 authored lines across 11 files - 400-line budget risk HIGH.
+        Recommended slicing for sdd-tasks: (1) migration.sql section 23 + live
+        RLS/trigger verification, (2) roles.ts + purchasesHelper.ts,
+        (3) the three UI files + docs.
+    note: >
+      Design read the live migration.sql, salesHelper.ts and both its call
+      sites, roles.ts, StockView.tsx and SalesHistory.tsx before writing, and
+      aligned to specs/purchase-tracking/spec.md (written in parallel). Two open
+      questions block nothing but MUST be resolved at apply time: DEV-1 (the
+      chronological guard on the purchase_price forward-update) and verifying
+      the real stock_movements reason CHECK constraint name against production.
+  tasks:
+    status: done
+    artifact: tasks.md
+    review_workload_forecast:
+      estimated_changed_lines: "~1290 total (PR1 ~250 SQL+verification / PR2 ~133 / PR3 ~904 UI+docs)"
+      budget_risk_400_lines: High
+      chained_prs_recommended: true
+      suggested_split: >
+        3 PRs matching design's own split: PR1 migration.sql section 23 + live
+        verification; PR2 roles.ts + purchasesHelper.ts; PR3 the three UI
+        files + docs.
+      chain_strategy: pending
+      decision_needed_before_apply: true
+    note: >
+      Phase-ordered per design's Migration/Rollout section: Phase 0 pre-apply
+      probe (row counts + mandatory reason-CHECK constraint-name verification
+      against production, since design flags the assumed name as unverified
+      and load-bearing) precedes Phase 1 (apply section 23 in strict order:
+      tables -> CHECK widening -> RLS -> functions/triggers -> grants) and
+      Phase 2 (live verification: all 5 pre-existing reasons, per-role RLS
+      impersonation, N-line trigger correctness, delete-reversal clamp-at-zero,
+      DEV-1 chronological-guard test with two purchases at different dates,
+      void-never-reverts-cost, analytics_product_ranking non-regression,
+      get_advisors clean). Phases 0-2 are marked orchestrator-run since apply
+      sub-agents have no Supabase MCP access in this environment. Phase 3
+      (roles.ts+purchasesHelper.ts) and Phase 4 (UI+docs) ship only after
+      Phases 0-2 are verified. DEV-1 and the overall design are treated as
+      already user-confirmed per state.yaml's design_confirmed_by_user and are
+      not re-surfaced as open items. Delivery strategy/chain-strategy decision
+      is left to the user via the orchestrator, not decided in tasks.md.
+  apply:
+    status: done
+    artifact: tasks.md
+    note: >
+      Single-PR pass (user-chosen size:exception, consistent with every prior
+      phase this session) implementing everything the apply sub-agent has
+      authority/tooling for: migration.sql section 23 (23.1-23.9, tables +
+      indexes + stock_movements.purchase_item_id column/index + reason CHECK
+      widened to 7 values + one_source_check + 5 RLS policies + 3 trigger
+      functions (set_purchase_item_scope BEFORE INSERT, apply_purchase_item_stock
+      AFTER INSERT/DELETE mirroring apply_sale_item_stock() with the
+      GREATEST(...,0) clamp kept verbatim, apply_purchase_item_cost AFTER INSERT
+      SECURITY DEFINER with the DEV-1 chronological guard implemented exactly as
+      designed - no re-litigation) + grants/revokes, written verbatim from
+      design.md including its comments; src/lib/roles.ts (PURCHASE_ROLES +
+      canRecordPurchase); new src/lib/purchasesHelper.ts (Purchase/PurchaseItemRow
+      types, purchaseTotal, deletePurchaseGroup returning {deletedIds, error} per
+      the deleteSaleGroup precedent, createPurchase with header-then-lines +
+      orphan-header cleanup on line-insert failure); new
+      src/components/admin/PurchaseModal.tsx (header fields + repeatable lines,
+      product picker reuses StockView's already-loaded products list - no second
+      fetch path, create/edit modes, edit = deletePurchaseGroup + short-count
+      abort + recreate mirroring SaleModal.tsx's pattern); new
+      src/components/admin/PurchasesHistory.tsx (date-range + quick pills +
+      aggregate stat cards + flat purchase list mirroring SalesHistory.tsx's
+      structure, per-row edit/void gated by canRecordPurchase against that row's
+      own branch_id, void behind a confirm dialog with the same short-count-abort
+      discipline mirroring MySalesView.tsx); StockView.tsx (third 'compras' tab,
+      role/userId/userBranchId props, StockMovement reason union + REASON_LABELS
+      extended); admin/page.tsx + encargado/page.tsx prop-passing;
+      StockAdjustmentView.tsx formatReason cases; docs/database.md (two new table
+      sections + trigger descriptions + RLS table row) and docs/features.md (new
+      section 3.5) both updated.
+
+      VERIFIED by this sub-agent: `npm run build` (0 TypeScript errors) and
+      `npm run lint` (0 problems) both pass clean after every change, run twice
+      (once after code changes, once after docs).
+
+      NOT verified / explicitly out of this sub-agent's authority (no Supabase
+      MCP access in this environment) — orchestrator-owned per the user's own
+      instructions and tasks.md's Phase 0/Phase 2 split, left unchecked with
+      [ORCHESTRATOR] markers in tasks.md rather than attempted: the pre-apply
+      probe (row-of-truth baseline + mandatory stock_movements.reason CHECK
+      constraint-name verification against production before the DROP/ADD in
+      23.3 - if the assumed name stock_movements_reason_check is wrong, the DROP
+      IF EXISTS silently no-ops and every 'purchase' insert fails at runtime);
+      actually applying migration.sql section 23 to production (nothing in this
+      PR has been run against the live database - the SQL exists only in the
+      checked-in file); all live RLS impersonation (admin/superadmin store-wide,
+      encargado own-branch-only rejection at another branch, stock/caja/employee
+      rejection on INSERT/DELETE, UPDATE denial for every role); the N-line
+      trigger correctness scenario and the delete-reversal clamp-at-zero edge
+      case; the DEV-1 chronological-guard live scenario (two purchases at
+      different dates, edit-the-older-one-does-not-clobber-the-newer-cost); the
+      void-never-reverts-cost live scenario; analytics_product_ranking
+      before/after diff and a get_advisors pass. Manual E2E (task 4.9) against
+      production with real admin/encargado accounts is also orchestrator-owned
+      and blocked until the schema actually exists in production.
+  orchestrator_db_verification:
+    status: done
+    date: 2026-08-30
+    note: >
+      Phase 0: baseline row counts (36 stock_movements, 26 products, 26
+      branch_stock); confirmed the stock_movements.reason CHECK constraint's
+      real name is exactly stock_movements_reason_check as design.md assumed
+      - no adjustment needed before the DROP/ADD in 23.3. Applied migration.sql
+      section 23 to production via apply_migration
+      (purchases_tracking_schema), success true, in the exact order design.md
+      specifies.
+
+      Phase 2 live verification, all inside BEGIN...ROLLBACK transactions
+      (confirmed zero trace left afterward - 0 purchases, stock/cost back to
+      exact baseline post-test): impersonated the real encargado
+      (a26a8f59..., branch 4e7a4cd5) and ran the full lifecycle in one
+      transaction - inserted a NEWER purchase (+5 units, cost 30000) then an
+      OLDER-dated purchase (+3 units, cost 20000, purchase_date backdated 30
+      days) for the same product; stock correctly went 4->12 (both applied
+      regardless of insert order); products.purchase_price correctly stayed
+      at 30000 after the older insert - THE KEY DEV-1 CONFIRMATION: the
+      chronologically-older purchase, despite being inserted SECOND in
+      wall-clock time, did not clobber the newer cost. Voided the older
+      purchase first (stock 12->9, cost still 30000), then the newer one too
+      (stock 9->4, back to exact baseline, cost STILL 30000 - confirms DEV-2,
+      void never reverts cost even for the purchase that set it).
+      stock_movements showed exactly 2 'purchase' rows after both inserts and
+      correct 'purchase_reversal' rows after both voids, each with
+      purchase_item_id set. Separately (own transaction): the same encargado
+      attempting to INSERT a purchase for a DIFFERENT branch in their own
+      store (Sucursal Tucuman) was rejected with a real RLS error (`42501:
+      new row violates row-level security policy for table "purchases"`).
+      Positive control: the real admin (abd51b80...) successfully inserted a
+      purchase targeting that same branch, confirming admin's store-wide
+      access is not accidentally blocked by the same policy.
+
+      stock/caja/employee role rejection was NOT live-tested with a real
+      profile of those roles - none exist in production today (only 2 admin,
+      1 encargado, 1 superadmin profiles exist). Verified instead by direct
+      policy-text inspection: the INSERT/DELETE WITH CHECK/USING clauses'
+      boolean structure has no arm any role outside admin/superadmin/encargado
+      can satisfy, and this exact boolean-IN-list shape was already
+      live-proven correct for the encargado arm above.
+
+      get_advisors(security): one new entry, apply_purchase_item_cost
+      appearing in authenticated_security_definer_function_executable -
+      expected and accepted (same SECURITY DEFINER + GRANT-to-authenticated
+      pattern as close_cash_session/adjust_branch_stock), no new finding
+      class. analytics_product_ranking was not modified by this change
+      (confirmed via diff of migration.sql - section 18.3 untouched), so no
+      before/after diff was necessary.
+
+      Still outstanding, requires a live browser session (admin + encargado)
+      which the orchestrator cannot perform (no login credentials): task 4.9,
+      the UI-level manual E2E through the actual "Compras" tab. The SQL-level
+      behavior it would exercise has already been proven directly against
+      the database above; 4.9 is specifically about confirming
+      PurchaseModal/PurchasesHistory/StockView's wiring works correctly
+      end-to-end in the browser.
+  verify:
+    status: pending
+  archive:
+    status: pending
+next_recommended: "sdd-verify (after the user completes the manual UI E2E per tasks.md task 4.9 - record/edit/void a purchase through the actual Compras tab)"
+triggered_by: >
+  Brand new capability request from the user, NOT part of the original
+  8-phase roadmap (which is fully complete). The user noticed
+  products.purchase_price is a single scalar silently overwritten on every
+  restock/import, with no history of what was actually paid over time, and
+  explicitly asked for a real "Compra" (Purchase) entity mirroring how
+  sales/sale_items work. A lighter alternative (just add a cost field to the
+  existing adjust_branch_stock restock path) was presented first and
+  explicitly rejected in favor of this full version.
+key_findings:
+  single_scalar_cost_no_history: >
+    products.purchase_price (migration.sql:464-465) is overwritten silently
+    on every product edit (StockView.tsx:325-362) and every Excel import row
+    (ProductImportDialog.tsx:365-389) - no history anywhere.
+  margin_uses_current_cost_for_historical_sales: >
+    analytics_product_ranking (migration.sql:2198-2227) computes
+    margin_estimated/margin_realized using the CURRENT products.purchase_price
+    against historical sale_items - a 3-month-old sale's margin recomputes
+    using today's cost every time the function runs.
+  two_distinct_stock_increase_patterns_exist: >
+    adjust_branch_stock (migration.sql:1278-1335) is an RPC used for manual
+    adjustments/restocks/imports, no cost field, reason whitelist
+    manual_adjustment/restock/import_ingress only. apply_sale_item_stock()
+    (migration.sql:919-968) is structurally different: an AFTER INSERT/DELETE
+    trigger on sale_items, atomic with the line-item insert, linked via
+    stock_movements.sale_item_id. The user's "mirror sales/sale_items" request
+    means the trigger pattern, not the RPC pattern.
+  role_asymmetry_for_purchases: >
+    adjust_branch_stock's role gate (admin/superadmin/encargado/stock) is
+    broader than CATALOG_WRITE_ROLES (admin/superadmin/encargado, no stock) -
+    the stock role can move quantities today but cannot edit purchase_price/
+    sale_price. A purchase writes both together, so neither existing role set
+    cleanly covers it without an explicit decision (now resolved: admin +
+    encargado only, matching CATALOG_WRITE_ROLES).
+  zero_supplier_entity_exists: >
+    Confirmed via grep - no supplier/proveedor table or entity anywhere. Only
+    hit is an unrelated placeholder string in CashSessionPanel.tsx:403's
+    cash-movement note field example.
+  ui_home_candidates: >
+    StockView.tsx:130 has exactly 2 tabs (productos/precios) - trivial to
+    extend with a 3rd 'compras' tab. HistoryView.tsx/SalesHistory.tsx's
+    date-range-filter + daily-grouped-table pattern is directly reusable for
+    a purchase-history list view.
+decisions_resolved_by_user:
+  fork_1_margin_calculation: >
+    (a) Status quo - margin continues using the CURRENT products.purchase_price
+    for all sales, exactly as today. analytics_product_ranking is NOT touched
+    by this change. Weighted-average costing can be added later as a pure
+    additive change once real purchase history accumulates.
+  fork_2_purchase_recording_roles: >
+    admin + encargado only (matches CATALOG_WRITE_ROLES exactly). The stock
+    role can still move quantities via adjust_branch_stock as today, but
+    cannot record a purchase (which sets cost, a more sensitive field).
+  fork_3_supplier_representation: >
+    Free-text supplier_name field on the purchase header, no validation/
+    autocomplete, no separate suppliers table. Can be promoted to a real
+    entity later (mirroring clients' shape) if supplier-level reporting is
+    ever wanted.
+approach_resolved: >
+  Trigger-based stock-increase mechanism (Approach 2 from exploration),
+  mirroring apply_sale_item_stock() exactly: a new AFTER INSERT trigger on
+  purchase_items atomically updates branch_stock and writes a stock_movements
+  row in the same transaction, linked via a new nullable
+  stock_movements.purchase_item_id column. stock_movements.reason CHECK gets
+  a new 'purchase' value alongside the existing 5.
+proposal_round2_resolved_by_user:
+  q1_purchase_updates_current_cost: >
+    YES - recording a purchase updates products.purchase_price to the new
+    unit_cost, in addition to being kept in purchase_items history. This
+    directly addresses the user's original framing ("esos pueden cambiar de
+    precio y etc") - the current-cost scalar stays meaningful/live, while
+    purchase_items preserves what was actually paid at each point in time.
+    fork_1_margin_calculation's "status quo" still holds (margin math itself
+    is unchanged), but the input to that math (products.purchase_price) is
+    now kept fresh by purchases instead of only by manual catalog edits/
+    Excel import.
+  q2_purchases_are_editable_voidable: >
+    CHANGED from the proposal's append-only assumption (mirrored from
+    sale_items): YES, a recorded purchase can be edited or voided. Resolved
+    architecture (orchestrator's call, matching this codebase's own
+    established correction pattern for sales - SaleModal.tsx's edit-mode
+    delete-then-recreate, MySalesView.tsx's void-via-delete - rather than a
+    true in-place UPDATE): purchase_items' stock/ledger trigger handles BOTH
+    INSERT and DELETE (mirroring apply_sale_item_stock's TG_OP branching
+    exactly, with a new 'purchase_reversal' stock_movements reason alongside
+    'purchase'), so deleting a purchase_items row atomically reverses its
+    stock contribution. "Editar" = delete + re-insert corrected rows (same
+    pattern as SaleModal.tsx); "Anular" = delete with no re-insert. Deletion
+    is only permitted while the purchase's cash-register-equivalent has no
+    downstream dependency (purchases have none, unlike sales/cash sessions -
+    no close_cash_session-style lock exists for purchases in this scope).
+  q2b_purchase_price_reversion_on_edit_void: >
+    ORCHESTRATOR DEFAULT, not asked as a 4th question - flag to user at
+    apply/design time for confirmation rather than blocking further. Editing
+    or voiding a purchase does NOT attempt to retroactively "revert"
+    products.purchase_price to some prior value (this would require
+    resolving "what was the cost before this purchase," which needs a
+    lookback query across remaining purchase_items and is a real edge case
+    once multiple purchases exist for the same product). Instead: every
+    purchase INSERT (including a re-insert during an edit) sets
+    products.purchase_price forward to that row's unit_cost; a pure void
+    leaves products.purchase_price exactly as it currently is (no
+    reversion). If the user wants the "current cost" to reflect an older
+    purchase after voiding the newest one, they re-edit the product
+    directly or record a corrective purchase - not automatic. sdd-design
+    should implement this default but flag it explicitly in design.md's
+    deviations section so the user can override before apply if this isn't
+    what they want.
+design_confirmed_by_user:
+  dev1_chronological_guard: >
+    CONFIRMED as designed - only the chronologically newest purchase for a
+    product may move products.purchase_price forward. Editing an older
+    purchase never clobbers a newer, correct cost. Implement design.md's
+    23.7 exactly as written, with the (purchase_date, created_at) guard.
+production_data_last_verified: >
+  Not yet re-verified this phase - cheap for the orchestrator to redo before
+  sdd-design given this phase adds new tables/a new trigger/a CHECK
+  constraint alteration on stock_movements (an existing, live table).
+status: in_progress

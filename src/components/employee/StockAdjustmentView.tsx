@@ -178,6 +178,10 @@ export function StockAdjustmentView({ profile, branchName }: StockAdjustmentView
         return 'Reversión venta'
       case 'import_ingress':
         return 'Ingreso importación'
+      case 'purchase':
+        return 'Compra'
+      case 'purchase_reversal':
+        return 'Reversión compra'
       default:
         return reason
     }

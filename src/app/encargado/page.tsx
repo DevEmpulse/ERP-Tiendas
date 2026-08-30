@@ -52,6 +52,25 @@ export default function EncargadoPage() {
   const [activeSection, setActiveSection] = useState<AdminSection>('dashboard')
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
 
+  // Sync section from query param if arriving from /pos or direct link
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const sec = params.get('section') as AdminSection | null
+      if (sec && sec !== 'pos') {
+        setActiveSection(sec)
+      }
+    }
+  }, [])
+
+  const handleSetSection = (section: AdminSection) => {
+    if (section === 'pos') {
+      router.push('/pos')
+      return
+    }
+    setActiveSection(section)
+  }
+
   // Realtime highlight state
   const [highlightedSaleIds, setHighlightedSaleIds] = useState<string[]>([])
 
@@ -416,7 +435,7 @@ export default function EncargadoPage() {
       {/* 1. SIDEBAR Navigation */}
       <EncargadoSidebar
         currentSection={activeSection}
-        setSection={setActiveSection}
+        setSection={handleSetSection}
         storeName={storeInfo?.name || 'Cargando tienda...'}
         adminName={userProfile?.name || 'Encargado'}
         adminEmail={userProfile?.email || 'encargado@tienda.com'}

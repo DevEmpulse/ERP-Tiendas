@@ -8,10 +8,14 @@ import {
   Settings,
   Building2,
   Wallet,
+  ShoppingCart,
+  Receipt,
   type LucideIcon,
 } from 'lucide-react'
 
 export type AdminSection =
+  | 'pos'
+  | 'my_sales'
   | 'dashboard'
   | 'history'
   | 'employees'
@@ -30,6 +34,12 @@ export interface SidebarItem {
 }
 
 export const ADMIN_MENU_ITEMS: SidebarItem[] = [
+  {
+    id: 'pos',
+    label: 'Punto de Venta',
+    icon: ShoppingCart,
+    description: 'Registrar ventas',
+  },
   {
     id: 'dashboard',
     label: 'Dashboard',
@@ -89,3 +99,9 @@ export const ADMIN_MENU_ITEMS: SidebarItem[] = [
 export const ENCARGADO_MENU_ITEMS: SidebarItem[] = ADMIN_MENU_ITEMS.filter(
   (item) => item.id !== 'branches' && item.id !== 'settings'
 )
+
+export const EMPLOYEE_MENU_ITEMS: SidebarItem[] = [
+  { id: 'pos',      label: 'Punto de Venta', icon: ShoppingCart, description: 'Registrar ventas' },
+  { id: 'my_sales', label: 'Mis ventas',     icon: Receipt,      description: 'Ventas del día' },
+  { id: 'cash',     label: 'Caja',           icon: Wallet,       description: 'Apertura y cierre' },
+]

@@ -127,6 +127,17 @@ export async function proxy(request: NextRequest) {
     }
   }
 
+  // 10. Access control for /pos
+  if (pathname.startsWith('/pos')) {
+    const isPosAllowed =
+      role === 'admin' ||
+      role === 'encargado' ||
+      (POS_ROLES as readonly string[]).includes(role ?? '')
+    if (!isPosAllowed) {
+      return redirectWithCookies(homeFor(role))
+    }
+  }
+
   return supabaseResponse
 }
 

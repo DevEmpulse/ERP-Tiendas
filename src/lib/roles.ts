@@ -3,6 +3,7 @@
 export type Role = 'admin' | 'encargado' | 'caja' | 'stock' | 'employee' | 'superadmin'
 
 export const POS_ROLES = ['caja', 'employee'] as const // legacy pairing
+export const POS_ENTRY_ROLES = ['admin', 'encargado', 'caja', 'employee'] as const // who may create sales via /pos
 export const STOCK_ROLES = ['stock'] as const
 export const BRANCH_SCOPED_ROLES = ['encargado', 'caja', 'stock', 'employee'] as const
 export const CATALOG_WRITE_ROLES = ['admin', 'superadmin', 'encargado'] as const

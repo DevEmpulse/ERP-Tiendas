@@ -1,0 +1,168 @@
+change: pos-ui
+artifact_store: openspec
+session_preflight:
+  pace: interactive
+  delivery_strategy: ask-on-risk
+  review_budget_lines: 400
+phases:
+  explore:
+    status: done
+    artifact: exploration.md
+    note: >
+      sdd-explore agent has no Write tool access; exploration content was
+      returned inline by the agent and persisted to exploration.md by the
+      orchestrator verbatim (no edits to substance).
+  propose:
+    status: done
+    artifact: proposal.md
+    note: >
+      Incorporates the 5 decisions_resolved_by_user verbatim. Declares one new
+      capability (pos-sale-entry) and explicitly no modified capabilities
+      (sale-line-items requirements unchanged). No schema/RLS/trigger change:
+      the stock warning is a client-side additive read of branch_stock. The
+      3 items the propose agent reasoned through without a user channel were
+      surfaced back to the user and resolved (see
+      proposal_round2_resolved_by_user below); proposal.md was amended
+      in-place by the orchestrator to reflect them, including a scope
+      expansion the user introduced via free-text: caja/employee gain a
+      sidebar shell (matching admin/encargado) with a new `pos` section,
+      replacing the old 3-tab strip, instead of just linking out from a tab.
+  spec:
+    status: done
+  design:
+    status: done
+    artifact: design.md
+    note: >
+      Concrete file-by-file design. 15 files total (7 new components under
+      src/components/pos/, 1 new EmployeeSidebar, 1 new route shell, 1 delete
+      of sales-form.tsx, 5 targeted modifications). No schema/RLS changes.
+      BarcodeWedgeListener uses 50ms threshold; StockWarningDialog is pre-submit
+      advisory only; submit logic ported verbatim from sales-form.tsx with
+      product_id now resolved at add-time instead of submit-time.
+  tasks:
+    status: done
+    artifact: tasks.md
+    note: >
+      6 sequential work units (T1–T6), ~1400 lines estimated. Each unit
+      independently compilable and verifiable. T3 includes deletion of
+      sales-form.tsx. T6 includes full manual E2E checklist (12 sub-items).
+  apply:
+    status: done
+    note: >
+      All 6 work units completed. npm run build: 0 TypeScript errors, 0 warnings.
+      /pos route live in route table. grep sales-form src/ = 0 results.
+      Files created: src/app/pos/page.tsx, src/components/pos/{types,PosShell,
+      PosCart,ProductPicker,BarcodeWedgeListener,StockWarningDialog,PosSubmitPanel}.tsx,
+      src/components/employee/EmployeeSidebar.tsx.
+      Files deleted: src/components/employee/sales-form.tsx.
+      Files modified: roles.ts, proxy.ts, sidebar-items.ts, employee-dashboard.tsx,
+      app/admin/page.tsx, app/encargado/page.tsx.
+  verify:
+    status: pending
+  archive:
+    status: pending
+next_recommended: "sdd-verify — manual E2E checklist T6.7 (12 sub-items)"
+decisions_resolved_by_user:
+  fork_1_shape: >
+    New dedicated /pos route, built from scratch, replacing sales-form.tsx
+    as the sale-entry point for caja/employee/encargado. SaleModal.tsx
+    keeps existing solely as the correction/edit tool for already-created
+    sales (still used by HistoryView/MySalesView edit mode).
+  fork_2_barcode_scope: >
+    Keyboard-wedge (physical USB/Bluetooth scanner, fast keystrokes+Enter)
+    only. No camera-based scanning in this phase.
+  fork_3_stock_blocking: >
+    Non-blocking warning. UI-only change: show "no hay stock suficiente"
+    but allow the cashier to confirm and continue. apply_sale_item_stock()
+    trigger behavior (clamp to zero, never raise) is NOT changed.
+  fork_4_unify_encargado_entry: >
+    Yes, unify. Encargado moves to the new /pos route for sale creation,
+    same as caja/employee, instead of continuing to use admin's
+    SaleModal.tsx for that purpose.
+  fork_5_receipt_sufficiency: >
+    Sufficient as-is. ReceiptModal.tsx (thermal 58/80mm) + pdfGenerator.ts
+    are reused unchanged; no ticket/receipt work in this phase.
+triggered_by: >
+  Phase 4 of the original multi-phase roadmap defined in
+  openspec/changes/archive/2026-08-28-stock-phase1-catalog/proposal.md.
+  P1 (catalog), store-branches (unplanned insertion), P2 (stock), P5
+  (granular roles, pulled forward), P3 (cash register) are all applied to
+  production. Every prior phase's proposal explicitly deferred "new POS UI"
+  to this phase with no real scope beyond the name.
+key_findings:
+  three_not_two_entry_paths: >
+    encargado creates/edits sales via admin's SaleModal.tsx (through
+    DashboardView.tsx), NOT via sales-form.tsx like caja/employee. Any
+    "who uses this UI" framing must count 3 code paths (sales-form.tsx,
+    SaleModal.tsx create, SaleModal.tsx edit), not 2.
+  no_product_picker_today: >
+    Both entry forms use a plain free-text Input for product name;
+    product_id is resolved only at submit time via a case-insensitive exact
+    name match against products fetched fresh each submit. An unmatched
+    name silently leaves product_id NULL and the sale still succeeds.
+  no_barcode_scan_anywhere: >
+    Repo-wide grep confirms EAN-8 barcodes are only used for label printing
+    (ProductLabel.tsx) and Excel import ID matching - no scan-to-add-line
+    UI exists in either sales-form.tsx or SaleModal.tsx, and no reusable
+    product-search/autocomplete component exists in the codebase at all.
+  stock_never_blocks_today: >
+    apply_sale_item_stock() clamps stock to zero via GREATEST(v_before +
+    v_delta, 0) and never raises - oversell succeeds silently today with no
+    UI warning. "Should stock be blocking" is a DB-trigger/schema decision,
+    not a UI-only call, and must be scoped and signed off as such.
+  cash_session_never_blocks_sale: >
+    Confirmed consistent with cash-register's design: cashSession.ts and
+    docs/features.md both state no sale is ever blocked by session state; a
+    sale with no open session gets cash_session_id = NULL. Any new POS UI
+    must preserve this invariant unless explicitly changed by the user.
+  receipt_printing_already_shipped: >
+    ReceiptModal.tsx + pdfGenerator.ts already provide configurable thermal
+    (58mm/80mm) and PDF receipt output, threaded through both existing
+    forms. P4 should reuse this as-is, not rebuild it - the real UX gap is
+    upstream of ticket generation (data entry speed/accuracy).
+open_forks_for_propose:
+  fork_1_shape: >
+    Rebuild as a dedicated /pos route vs. redesign sales-form.tsx/
+    SaleModal.tsx in place vs. extract-shared-core-only for this phase.
+    Exploration recommends resolving this only after the other forks, since
+    it depends on their answers.
+  fork_2_barcode_scope: >
+    Keyboard-wedge (USB/Bluetooth scanner typed as fast keystrokes+Enter)
+    only, or also camera-based scanning for tablet/mobile without an
+    external scanner?
+  fork_3_stock_blocking: >
+    Keep today's silent clamp-to-zero (never block), add a non-blocking
+    low-stock/oversell warning, or make it a hard DB-level block. This is a
+    trigger-behavior change affecting every sale-entry surface including
+    the Excel import's adjust_branch_stock calls, not a UI-only decision.
+  fork_4_unify_encargado_entry: >
+    Should P4 unify encargado's SaleModal.tsx entry point with caja/
+    employee's sales-form.tsx onto one surface, or intentionally keep
+    back-office (admin/encargado) and front-counter (caja/employee) sale
+    entry separate?
+  fork_5_receipt_sufficiency: >
+    Confirm ReceiptModal.tsx's existing thermal/PDF flow is fully
+    sufficient for P4, or if there is a ticket-flow gap not already covered
+    by the shipped receipt work.
+proposal_round2_resolved_by_user:
+  q1_sales_form_disposition: >
+    Delete sales-form.tsx outright, no fallback copy kept.
+  q2_employee_navigation_to_pos: >
+    CHANGED from the propose agent's own reasoned default (keep the 3-tab
+    strip and link "Nueva venta" to /pos). User instead chose, via a
+    free-text answer, to give caja/employee a full sidebar shell like
+    admin/encargado, with `pos` as one of its sections (alongside
+    mis-ventas and caja). The vacated dashboard tab space is reserved for
+    future analytics, not built in this phase. Confirmed explicitly in a
+    follow-up question: yes, build the sidebar now (not just a link-out
+    from the existing tab strip).
+  q3_unlisted_product_escape_hatch: >
+    Not challenged - stands as proposed. /pos keeps a manual "producto no
+    listado" free line so the counter is never blocked by a missing catalog
+    entry.
+production_data_last_verified: >
+  Not re-verified this phase (exploration agent has no Supabase access);
+  last confirmed 0 sales as of cash-register apply on 2026-08-29 - cheap
+  for the orchestrator to redo before sdd-design if this phase reaches
+  schema changes (fork_3).
+status: in_progress

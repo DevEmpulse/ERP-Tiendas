@@ -23,6 +23,7 @@ export function CashSessionStatusBadge({ branchId, refreshKey }: CashSessionStat
   useEffect(() => {
     let ignore = false
     if (!branchId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset to loading when there is no branch to check
       setStatus('loading')
       return
     }

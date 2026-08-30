@@ -13,16 +13,6 @@ Tabla maestra de comercios registrados.
 - `thermal_paper_width` (`text`, DEFAULT `'58mm'`, CHECK `in ('58mm', '80mm')`): Configuración del ancho de papel térmico para tickets.
 - `created_at` (`timestamptz`, DEFAULT `now()`): Fecha de registro.
 
-### 2. `profiles` (Perfiles de Usuarios)
-Asocia los usuarios de `auth.users` a una tienda y determina su rol en la plataforma.
-- `id` (`uuid`, PK, FK -> `auth.users.id` ON DELETE CASCADE): ID de autenticación.
-- `store_id` (`uuid`, FK -> `stores.id` ON DELETE CASCADE): Tienda a la que pertenece el usuario.
-- `email` (`text`, UNIQUE): Correo electrónico del usuario.
-- `name` (`text`): Nombre legible del usuario.
-- `role` (`text`, CHECK `in ('admin', 'employee', 'superadmin')`): Rol dentro del sistema.
-- `branch_id` (`uuid`, NULL, FK -> `branches.id` ON DELETE NO ACTION): Sucursal asignada. Obligatorio (`NOT NULL` vía CHECK) para `role = 'employee'`; `admin` y `superadmin` quedan en `NULL` y flotan sobre todas las sucursales de su tienda. CHECK `profiles_employee_branch_check`: `role <> 'employee' OR branch_id IS NOT NULL`.
-- `created_at` (`timestamptz`, DEFAULT `now()`): Fecha de creación del perfil.
-
 ### 1.1 `branches` (Sucursales)
 Ubicaciones físicas de una tienda. Toda tienda tiene al menos una sucursal en todo momento.
 - `id` (`uuid`, PK, `gen_random_uuid()`): Identificador único de la sucursal.
@@ -50,7 +40,7 @@ Registro de ventas procesadas en el local.
 - `payment_method` (`text`, CHECK `in ('cash', 'transfer', 'card')`, NOT NULL): Medio de pago.
 - `total_amount` (`numeric(10,2)`, NOT NULL): Monto total de la operación.
 - `client_id` (`uuid`, FK -> `clients.id` ON DELETE SET NULL): Cliente asociado (opcional).
-- `branch_id` (`uuid`, NULL, FK -> `branches.id` ON DELETE NO ACTION): Sucursal donde se registró la venta — atribución únicamente; las políticas RLS de `sales` siguen siendo a nivel de tienda completa (ver "Ambas formas de RLS" más abajo). Se completa en cada inserción nueva (empleado: su propia sucursal; admin: la sucursal seleccionada en el panel), pero queda `NULL` en ventas anteriores a este cambio.
+- `branch_id` (`uuid`, NULL, FK -> `branches.id` ON DELETE NO ACTION): Sucursal donde se registró la venta. Desde la sección 16 ("Granular Roles"), las políticas RLS de `sales` usan la **Forma D** (sucursal y división por verbo — ver la tabla de RLS y "Formas de Predicados RLS" más abajo): `admin`/`superadmin` operan a nivel de tienda completa, mientras que `encargado`/`caja`/`employee` quedan acotados a su propia sucursal. Se completa en cada inserción nueva (empleado: su propia sucursal; admin: la sucursal seleccionada en el panel), pero queda `NULL` en ventas anteriores a este cambio.
 - `created_at` (`timestamptz`, DEFAULT `now()`): Timestamp de la venta.
 
 ### 5. `product_price_rules` (Reglas de Precio / Stock)
@@ -147,7 +137,7 @@ Inmutable en las mismas dos capas que `stock_movements`: RLS sin políticas `UPD
 ### `sales.cash_session_id` — Atribución de venta a caja (sección 17.4-17.5)
 - `cash_session_id` (`uuid`, NULL, `FOREIGN KEY (branch_id, cash_session_id) REFERENCES cash_sessions (branch_id, id) ON DELETE SET NULL`): a qué sesión de caja pertenece la venta. **Ninguna venta se bloquea nunca por el estado de la caja** — si no hay sesión abierta en la sucursal, queda `NULL` (sin atribuir), igual que `sale_items.product_id` para un nombre no reconocido.
 - Trigger `enforce_sale_cash_session()` (`BEFORE INSERT` en `sales`, `SECURITY INVOKER`): si el `cash_session_id` adjunto no existe, no pertenece a esa sucursal, o ya no está `open`, lo degrada silenciosamente a `NULL` — nunca rechaza el `INSERT`. Es el respaldo para la ventana de milisegundos entre que el cliente resuelve la sesión abierta y el `INSERT` realmente corre.
-- Resolución en el cliente (`src/lib/cashSession.ts`, `fetchOpenSession`): cada uno de los cuatro puntos de venta (`sales-form.tsx` simple/combinado, `SaleModal.tsx` alta/edición) resuelve la sesión abierta de la sucursal **en el momento del submit**, nunca desde estado cacheado — todas las filas de un pago combinado comparten el mismo id resuelto.
+- Resolución en el cliente (`src/lib/cashSession.ts`, `fetchOpenSession`): cada uno de los puntos de venta (`/pos`, `src/components/pos/PosShell.tsx`; `SaleModal.tsx` alta/edición) resuelve la sesión abierta de la sucursal **en el momento del submit**, nunca desde estado cacheado — todas las filas de un pago combinado comparten el mismo id resuelto.
 
 ### `close_cash_session(p_session_id, p_counted_amount)` — RPC de cierre (sección 17.6)
 `SECURITY DEFINER` (a propósito, no `SECURITY INVOKER`): el cliente no tiene ningún `GRANT UPDATE` sobre `cash_sessions`, así que `expected_amount`/`discrepancy` no pueden falsificarse desde un `PATCH` directo. La autorización se hace **dentro del cuerpo de la función**, replicando el patrón de `preload_employee`:
@@ -235,6 +225,36 @@ Asocia los usuarios de `auth.users` a una tienda y determina su rol en la plataf
 - `role` (`text`, CHECK `in ('admin', 'encargado', 'caja', 'stock', 'employee', 'superadmin')`): Rol dentro del sistema.
 - `branch_id` (`uuid`, NULL, FK -> `branches.id` ON DELETE NO ACTION): Sucursal asignada. Obligatorio (`NOT NULL`) para `encargado`, `caja`, `stock`, `employee`; `admin` y `superadmin` quedan obligatoriamente en `NULL`. CHECK `profiles_employee_branch_check`: `CASE WHEN role IN ('encargado','caja','stock','employee') THEN branch_id IS NOT NULL WHEN role IN ('admin','superadmin') THEN branch_id IS NULL ELSE true END`.
 - `created_at` (`timestamptz`, DEFAULT `now()`): Fecha de creación del perfil.
+
+---
+
+## 📈 Store Analytics — agregación de solo lectura (secciones 18-19)
+
+Seis objetos SQL de solo lectura que alimentan el panel `/analytics` (`AnalyticsShell.tsx`). Ninguno muta datos. Todos son `SECURITY INVOKER` (la vista usa el equivalente `security_invoker = true`), así que las políticas RLS ya existentes de las tablas base (`branch_stock`, `products`, `sales`/`sale_items`, `cash_sessions`) hacen el trabajo de scoping — la única excepción es `analytics_branch_comparison`, que re-deriva el predicado a mano (ver abajo).
+
+### `analytics_low_stock` (vista, sección 18.2)
+`CREATE VIEW ... WITH (security_invoker = true)`. Sin `security_invoker = true` la vista correría con los permisos del owner (`postgres`, que ignora RLS) y expondría todas las tiendas. Devuelve una fila por cada par `(branch_id, product_id)` de `branch_stock` donde `min_stock > 0 AND current_stock <= min_stock` y el producto está activo, con el nombre de sucursal/producto y el código de barras ya resueltos. `min_stock` es `NOT NULL DEFAULT` (ver sección 20 más abajo), por lo que "sin configurar" es exactamente `0` — no hay un caso `NULL` que manejar.
+
+### `analytics_product_ranking(p_from, p_to, p_branch_id DEFAULT NULL)` (función, sección 18.3)
+`SECURITY INVOKER STABLE`. Rankea productos por unidades vendidas, ingresos y margen (estimado con precios actuales del catálogo, y realizado con el precio de costo vigente al momento de la consulta) en el rango `[p_from, p_to)`. Excluye líneas legacy sin `product_id` resuelto. La política `SELECT` de `sale_items` (Forma D) ya limita a un `encargado` a su propia sucursal; `p_branch_id` solo puede acotar más, nunca ampliar.
+
+### `analytics_branch_comparison(p_from, p_to)` (función, sección 18.4)
+`SECURITY INVOKER STABLE`. **El único objeto que re-deriva el scoping a mano.** `branches` tiene lectura de tienda completa (Forma A/C), así que conducir el `FROM` directamente desde `branches` filtraría los números por RLS pero no ocultaría las sucursales ajenas — un `encargado` vería una fila en cero por cada sucursal hermana en vez de no verla. El predicado explícito `WHERE ... AND (role IN ('admin','superadmin') OR b.id = get_current_user_branch_id())` es lo que fuerza la decisión resuelta "encargado ve únicamente su propia sucursal". `sales_count` replica el agrupado por `Ref:` de `groupSales()` (`salesHelper.ts`) para que un pago combinado cuente como una sola operación, igual que en el Dashboard.
+
+### `analytics_cash_discrepancy(p_from, p_to, p_branch_id DEFAULT NULL)` (función, sección 18.5)
+`SECURITY INVOKER STABLE`. Devuelve una fila por sesión de caja **cerrada** (no un agregado pre-agrupado) en el rango dado, con el nombre de quien cerró la caja. El `LEFT JOIN` a `profiles` es solo para mostrar el nombre de `closed_by` sobre filas ya acotadas por el propio scoping de `cash_sessions` — no es una tabla conductora que necesite predicado adicional. **No usada actualmente por la UI** (`CashDiscrepancyPanel` no existe en `src/`) — deuda documentada, no un hallazgo nuevo.
+
+### `analytics_sales_trend(p_from, p_to, p_branch_id DEFAULT NULL)` (función, sección 19.1)
+`SECURITY INVOKER STABLE`. Serie diaria de ingresos (`SUM(total_amount)` agrupado por día) en el rango dado. Conducida desde `sales`, ya acotada por su propia RLS Forma D para `encargado` — a diferencia de `analytics_branch_comparison`, no necesita un predicado manual porque no conduce desde una tabla de lectura store-wide.
+
+### `analytics_category_comparison(p_from, p_to, p_branch_id DEFAULT NULL)` (función, sección 19.2)
+`SECURITY INVOKER STABLE`. Ingresos y unidades vendidas agrupados por categoría en el rango dado, conducida desde `sale_items` (misma herencia de scoping que `analytics_product_ranking`). `LEFT JOIN` a `categories` porque `products.category_id` es nullable (`ON DELETE SET NULL`); productos sin categoría se agrupan bajo `'Sin categoría'`.
+
+### Permisos (secciones 18.6/19.3)
+Mismo patrón revoke-then-grant que el resto de funciones `SECURITY DEFINER`/RPC del proyecto, aplicado aquí por higiene aunque estas funciones sean `SECURITY INVOKER`: `REVOKE EXECUTE ... FROM PUBLIC, anon` + `GRANT EXECUTE ... TO authenticated` en cada función; `GRANT SELECT ON analytics_low_stock TO authenticated` + `REVOKE ALL ... FROM anon` en la vista. Una vista/función `security_invoker`/`SECURITY INVOKER` además requiere que quien llama tenga `SELECT` sobre las tablas base — `branch_stock` ya lo otorga explícitamente; `products`/`sales`/`sale_items` lo tienen vía los privilegios por defecto de Supabase para `authenticated`.
+
+### `branch_stock.min_stock` — cambio de valor por defecto (sección 20)
+Antes de este follow-up, `min_stock` no era configurable desde ninguna UI y quedaba en `0` ("sin configurar") en absolutamente todas las filas, lo que dejaba `analytics_low_stock` permanentemente vacía. A pedido explícito del usuario: `ALTER TABLE branch_stock ALTER COLUMN min_stock SET DEFAULT 8` (para pares producto×sucursal nuevos) + `UPDATE branch_stock SET min_stock = 8` (para sembrar todas las filas existentes). Cambio puramente de datos/default — sin columna nueva, sin cambio de RLS. Cada fila sigue siendo editable individualmente después vía `StockAdjustDialog`.
 
 ---
 

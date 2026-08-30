@@ -198,6 +198,7 @@ export function ProductImportDialog({ open, onClose, storeId, onImported }: Prod
   // dialog itself initiates (Escape, backdrop click, its Close button), never for a
   // parent-driven open. Branch loading must react to `open` itself, not to that callback.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial branch fetch when the dialog opens
     if (open) loadBranches()
   }, [open, loadBranches])
 

@@ -4,11 +4,19 @@ Este documento describe las capacidades funcionales de **ERP Tiendas** y el comp
 
 ---
 
-## 🛒 1. Formulario de Ventas y Pagos Combinados
+## 🛒 1. Punto de Venta (`/pos`) y Corrección de Ventas (`SaleModal.tsx`)
 
-El módulo de registro de ventas (`sales-form.tsx` y `SaleModal.tsx`) permite procesar operaciones comerciales de forma ágil e intuitiva.
+El registro de ventas ocurre principalmente en **`/pos`** (`src/app/pos/page.tsx` → `PosShell.tsx`), la superficie de venta usada por `caja`, `employee` y `encargado`. `SaleModal.tsx` sigue existiendo como la herramienta de **corrección/edición** de ventas ya creadas (usada por `HistoryView`/`MySalesView`), y también como una vía alternativa de alta desde el panel de administración.
 
-### Características Principales:
+### `/pos` (`PosShell.tsx`)
+- **`ProductPicker`**: búsqueda de productos por nombre o código de barras, agrega ítems al carrito.
+- **`BarcodeWedgeListener`**: escucha la entrada de un lector de código de barras físico (modo "wedge de teclado") en cualquier parte de la pantalla y agrega el producto encontrado sin necesidad de foco en un campo de texto; código no encontrado muestra un toast de error.
+- **`PosCart`**: carrito editable en línea (cantidad/precio por fila), con soporte para reglas de precio especial por cantidad (mismo motor que `product_price_rules`, sección 3.4).
+- **`StockWarningDialog`**: si la cantidad pedida excede el stock disponible en la sucursal, muestra una advertencia **no bloqueante** antes de confirmar — el usuario puede continuar y la venta se registra igual (el stock se recorta en cero, nunca queda negativo).
+- **`PosSubmitPanel`**: selección de medio de pago (efectivo/transferencia/tarjeta), pago combinado con desglose por medio y referencia compartida (`Ref:`), y datos opcionales de cliente.
+- Admin no tiene sucursal fija: `/pos` incluye su propio selector de sucursal en el header (igual patrón que `admin/page.tsx`); el resto de los roles usa su `profile.branch_id` fijo.
+
+### `SaleModal.tsx` (corrección/edición)
 - **Carga de Ítems Múltiples**: Adición dinámica de productos con cálculo bidireccional entre *Cantidad*, *Precio Unitario* e *Importe Total*.
 - **Desglose de Pago Combinado**: Soporte para operaciones pagadas con múltiples medios (ej. parte en Efectivo y parte por Transferencia/Tarjeta).
 - **Código de Referencia Único (`ref_code`)**: Cuando una venta es combinada o incluye múltiples comprobantes, el sistema asigna una referencia compartida para agrupar las transacciones sin perder el desglose por medio de pago en la base de datos.
@@ -85,10 +93,27 @@ Permite a los comercios mantener un registro ordenado de sus compradores habitua
 
 La vista principal de administración (`DashboardView.tsx`, `HistoryView.tsx`, `EmployeeReport.tsx`, `KpiCards.tsx`) proporciona métricas operativas clave:
 
-- **Métricas KPI**: Ingresos totales del día, cantidad de operaciones, ticket promedio y comparación porcentual contra el día anterior.
-- **Desglose por Medio de Pago**: Visualización instantánea de totales cobrados en Efectivo, Transferencias y Tarjetas.
+- **Métricas KPI** (`KpiCards.tsx`): Ingresos del día (con toggle para ocultar/mostrar el monto) y cantidad de ventas del día, con el ticket promedio (ingresos ÷ cantidad de ventas) mostrado dentro de la tarjeta de ventas.
 - **Historial Agrupado**: Tabla interactiva con búsqueda por fechas, filtros rápidos (*Hoy*, *Ayer*, *Este Mes*) y desglose expandible de ventas combinadas.
 - **Reporte por Empleado**: Estadísticas agregadas que muestran el total vendido y la cantidad de operaciones procesadas por cada miembro del personal.
+
+---
+
+## 📈 5.0. Analítica de Tienda (`/analytics`)
+
+Panel de analítica (`AnalyticsShell.tsx` y sus paneles) para decisiones de negocio a nivel de producto, sucursal y stock. **Acceso exclusivo `admin` + `encargado`** — `caja`, `stock` y `employee` son redirigidos fuera de `/analytics`. Período por defecto: **últimos 30 días** (`PeriodSelector.tsx`), ajustable.
+
+### Paneles
+- **Ranking de Productos** (`ProductRankingPanel.tsx`): top de productos con alternador **Mejores/Peores** vendedores y selector de métrica (Unidades, Ingresos o Margen).
+- **Comparación de Sucursales** (`BranchComparisonPanel.tsx`): ingresos, cantidad de ventas y stock total por sucursal — solo visible con datos reales para `admin` (`encargado` ve únicamente su propia sucursal, reflejo directo del scoping en `analytics_branch_comparison`).
+- **Alertas de Stock Bajo** (`LowStockPanel.tsx`): productos con `branch_stock.current_stock <= branch_stock.min_stock` (ver `docs/database.md`, `min_stock` default `8`), con columna de sucursal cuando el admin ve "todas las sucursales".
+- **Tendencia de Ventas** (`SalesTrendPanel.tsx`): ingresos diarios en el período seleccionado.
+- **Comparación por Categoría** (`CategoryComparisonPanel.tsx`): ingresos y unidades vendidas agrupados por categoría de producto.
+
+### Filtros y exportación
+- **Selector de sucursal**: `admin` puede ver "todas las sucursales" o filtrar por una específica; `encargado` queda fijo en la propia (el filtro visual es solo informativo — el scoping real ya lo garantizan las funciones SQL, ver `docs/database.md`).
+- **Actualizar**: recarga los cinco paneles con el período/sucursal actualmente seleccionados; no hay actualización en tiempo real (sin realtime push).
+- **Exportar PDF** (`generateAnalyticsReportPdf`, `pdfGenerator.ts`): genera un PDF con exactamente las métricas mostradas en pantalla en ese momento (mismo período, misma sucursal, mismos datos ya cargados).
 
 ---
 

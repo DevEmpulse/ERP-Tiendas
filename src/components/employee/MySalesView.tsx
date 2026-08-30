@@ -15,7 +15,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  Calendar,
   DollarSign,
   Pencil,
   Trash2,
@@ -145,9 +144,10 @@ export function MySalesView({
     } finally {
       setLoading(false)
     }
-  }, [profile.store_id, profile.id, profile.branch_id, supabase])
+  }, [profile.store_id, profile.id, profile.branch_id, supabase, toast])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial fetch on mount
     loadMySales()
   }, [loadMySales])
 

@@ -58,6 +58,7 @@ export default function EncargadoPage() {
       const params = new URLSearchParams(window.location.search)
       const sec = params.get('section') as AdminSection | null
       if (sec && sec !== 'pos' && sec !== 'analytics') {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- sync activeSection from a URL query param on mount
         setActiveSection(sec)
       }
     }

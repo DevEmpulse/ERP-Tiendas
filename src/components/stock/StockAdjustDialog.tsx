@@ -56,6 +56,7 @@ export function StockAdjustDialog({
 
   useEffect(() => {
     if (product) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the form fields whenever the target product opens/switches
       setAdjustDelta('')
       setAdjustReason('manual_adjustment')
       setAdjustNote('')

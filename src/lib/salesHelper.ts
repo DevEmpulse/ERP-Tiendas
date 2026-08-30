@@ -1,3 +1,7 @@
+import type { createClient } from '@/utils/supabase/client'
+
+type SupabaseClient = ReturnType<typeof createClient>
+
 export interface SaleProfile {
   id: string
   name: string | null
@@ -240,7 +244,7 @@ export function groupSales(sales: Sale[]): GroupedSale[] {
  * a double stock deduction on the edit-mode delete-then-recreate flow.
  */
 export async function deleteSaleGroup(
-  supabase: any,
+  supabase: SupabaseClient,
   ids: string[]
 ): Promise<{ deletedIds: string[]; error: { message: string } | null }> {
   if (!ids || ids.length === 0) return { deletedIds: [], error: null }

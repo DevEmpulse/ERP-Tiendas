@@ -26,7 +26,7 @@ import {
   ADMIN_MENU_ITEMS,
   type AdminSection,
 } from '@/components/admin/sidebar-items'
-import { homeFor, type Role } from '@/lib/roles'
+import type { Role } from '@/lib/roles'
 import type { CartLine, PosProduct, StockWarningItem, PriceRule } from './types'
 
 interface Branch {
@@ -115,6 +115,7 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
           }))
         )
       )
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- supabase is a fresh client per render (createClient() has no module-level singleton), so it is intentionally omitted to avoid re-running this fetch on every render
   }, [profile.store_id])
 
   // ── Price rules fetch (quantity-based special-price suggestions) ──────────
@@ -134,6 +135,7 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
           )
         }
       })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- supabase is a fresh client per render (createClient() has no module-level singleton), so it is intentionally omitted to avoid re-running this fetch on every render
   }, [profile.store_id])
 
   // Get matching price rule for a cart line — ported verbatim from the
@@ -167,6 +169,7 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
         setBranches(activeBranches)
         setSelectedBranchId(prev => prev ?? activeBranches[0]?.id ?? null)
       })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- supabase is a fresh client per render (createClient() has no module-level singleton), so it is intentionally omitted to avoid re-running this fetch on every render
   }, [profile.role, profile.store_id])
 
   // Branch actually used to scope stock checks, cash-session attribution and

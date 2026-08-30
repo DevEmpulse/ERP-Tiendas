@@ -41,6 +41,7 @@ export function ProductPicker({ products, onAddLine }: ProductPickerProps) {
 
   // Reset selection on query change
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the highlighted index whenever the search query changes
     setSelectedIndex(0)
   }, [query])
 

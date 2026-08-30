@@ -151,6 +151,7 @@ export function StockAdjustmentView({ profile, branchName }: StockAdjustmentView
   }, [storeId, branchId, supabase])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial fetch on mount
     loadData()
     loadRecentMovements()
   }, [loadData, loadRecentMovements])
@@ -379,7 +380,7 @@ export function StockAdjustmentView({ profile, branchName }: StockAdjustmentView
                           {mov.note && (
                             <>
                               <span>·</span>
-                              <span className="truncate italic">"{mov.note}"</span>
+                              <span className="truncate italic">&ldquo;{mov.note}&rdquo;</span>
                             </>
                           )}
                         </div>

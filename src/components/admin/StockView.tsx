@@ -94,8 +94,6 @@ interface PriceRule {
   created_at: string
 }
 
-type AdjustReason = 'manual_adjustment' | 'restock'
-
 const REASON_LABELS: Record<StockMovement['reason'], string> = {
   sale: 'Venta',
   sale_reversal: 'Reversión de venta',

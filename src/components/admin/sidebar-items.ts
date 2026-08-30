@@ -10,6 +10,7 @@ import {
   Wallet,
   ShoppingCart,
   Receipt,
+  BarChart3,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -25,6 +26,7 @@ export type AdminSection =
   | 'cash'
   | 'branches'
   | 'settings'
+  | 'analytics'
 
 export interface SidebarItem {
   id: AdminSection
@@ -81,6 +83,12 @@ export const ADMIN_MENU_ITEMS: SidebarItem[] = [
     label: 'Caja',
     icon: Wallet,
     description: 'Apertura, cierre y reconciliación de caja',
+  },
+  {
+    id: 'analytics',
+    label: 'Analítica',
+    icon: BarChart3,
+    description: 'Ranking de productos, sucursales, stock y caja',
   },
   {
     id: 'branches',

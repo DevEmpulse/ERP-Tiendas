@@ -472,6 +472,10 @@ export function PosShell({ profile, storeName, branchName, paperWidth }: PosShel
   // ── Sidebar Section Navigation ─────────────────────────────────────────────
   const handleSetSection = (section: AdminSection) => {
     if (section === 'pos') return // already on POS
+    if (section === 'analytics') {
+      router.push('/analytics')
+      return
+    }
 
     if (profile.role === 'admin') {
       router.push(section === 'dashboard' ? '/admin' : `/admin?section=${section}`)

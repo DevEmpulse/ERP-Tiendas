@@ -1,0 +1,485 @@
+change: analytics
+artifact_store: openspec
+session_preflight:
+  pace: interactive
+  delivery_strategy: ask-on-risk
+  review_budget_lines: 400
+phases:
+  explore:
+    status: done
+    artifact: exploration.md
+    note: >
+      sdd-explore agent has no Write tool access; exploration content was
+      returned inline by the agent and persisted to exploration.md by the
+      orchestrator verbatim.
+  propose:
+    status: done
+    artifact: openspec/changes/analytics/proposal.md
+    note: >
+      All 8 forks were resolved by the user before this phase and are
+      incorporated verbatim, not re-litigated. New capability: store-analytics.
+      Modified capabilities: none - neither existing spec (product-catalog,
+      sale-line-items) covers dashboard branch scoping or employee reporting,
+      so the two bundled bugfixes have no existing contract to delta and their
+      corrected behavior is specified under store-analytics. Open judgment call
+      deferred to sdd-design: whether any aggregation view/RPC needs
+      SECURITY DEFINER or can stay SECURITY INVOKER.
+  spec:
+    status: done
+    artifact: openspec/changes/analytics/specs/store-analytics/spec.md
+    note: >
+      New capability store-analytics only - full spec (not a delta), since
+      this capability did not exist before. Confirmed no delta needed for
+      product-catalog or sale-line-items: neither covers dashboard branch
+      scoping or employee reporting, matching the proposal's "Modified
+      Capabilities: None" determination. Covers role access/branch scoping,
+      Bugfix A (Dashboard/History branch filter), Bugfix B (EmployeeReport
+      role-consistent scoping, no misleading $0), product ranking/margin
+      (30-day rolling window), branch comparison, low-stock alerts
+      (min_stock, panel-only), cash discrepancy trends, on-demand
+      recomputation (no realtime), PDF export, and SECURITY INVOKER for new
+      aggregation views/RPCs.
+  design:
+    status: done
+    artifact: openspec/changes/analytics/design.md
+    note: >
+      Grounded against the live code, not the proposal's prose. Aligned to
+      specs/store-analytics/spec.md (written in parallel), all 11 requirements
+      mapped. Design only - no code written, no migration applied.
+    key_decisions:
+      view_security_invoker_is_mandatory: >
+        The user's "SECURITY INVOKER is sufficient" resolution holds for
+        FUNCTIONS (invoker is the default) but a plain CREATE VIEW executes
+        with the VIEW OWNER's rights - postgres, which bypasses RLS - and
+        would expose every branch of every store. analytics_low_stock is
+        therefore created WITH (security_invoker = true) (PG15+, which
+        Supabase runs). Load-bearing: the whole INVOKER decision depends on
+        this option being present. Supabase's own linter flags its absence as
+        security_definer_view.
+      branch_comparison_re_derives_scoping: >
+        RLS is inherited safely only where the DRIVING table is branch-scoped:
+        sale_items (16.5), branch_stock (15.6) and cash_sessions (17.3) all
+        are, so ranking/low-stock/discrepancy inherit correctly. branches is
+        store-wide readable (14.2), so analytics_branch_comparison driven FROM
+        branches would hand an encargado one zero-row per sibling branch - RLS
+        zeroes the numbers but does not hide the branches. It carries an
+        explicit "role IN (admin,superadmin) OR b.id =
+        get_current_user_branch_id()" predicate. This is the ONE place scoping
+        is re-derived by hand, and is exactly the proposal's top-named risk.
+      one_view_three_functions: >
+        Views take no parameters. Low-stock is a point-in-time snapshot ->
+        view (analytics_low_stock). Product ranking, branch comparison and
+        cash discrepancy need p_from/p_to (30-day rolling default) ->
+        SECURITY INVOKER STABLE SQL functions called through supabase.rpc().
+        Appended as migration.sql section 18 (18.1 indexes, 18.2 view,
+        18.3-18.5 functions, 18.6 grants, 18.7 rollback), after 17.9.
+      standalone_analytics_route: >
+        Standalone /analytics mirroring /pos, NOT a dashboard section. A
+        section would reuse the header branch selector and save ~120 lines,
+        but the spec's access scenarios say "WHEN they navigate to /analytics"
+        and roles.ts would have nothing to gate - the spec mandates the literal
+        URL. Reachability follows the pos precedent: a sidebar item whose
+        handleSetSection arm does router.push('/analytics'), plus a proxy.ts
+        section-11 access block and an ANALYTICS_ROLES arm in canAccess.
+      bugfix_a_fixed_at_the_query_not_the_reducer: >
+        admin/page.tsx's sales query gains a conditional
+        .eq('branch_id', selectedBranchId) gated on a new branchesLoaded flag
+        (so a store with zero active branches never hangs on a permanent
+        skeleton). localTodayStats() is then left byte-for-byte UNCHANGED and
+        HistoryView is fixed for free, because both reduce over the now
+        branch-filtered sales array. The realtime subscription filter also
+        moves from store_id=eq to branch_id=eq (matching encargado:232): a
+        sale on an unselected branch must NOT still highlight, or the bug
+        re-enters through the realtime path.
+      encargado_page_needs_no_bugfix_a: >
+        DEVIATION from the proposal's Affected Areas ("same fix"). The live
+        encargado/page.tsx already filters .eq('branch_id', branchId) at :188
+        and already scopes realtime to branch_id=eq at :232. Only the
+        analytics navigation arm changes there - ~6 lines, not ~28.
+      bugfix_b_scope_alignment_plus_named_role_constant: >
+        EmployeeReport reads the caller's own role/branch_id once (self
+        contained - EmployeesView and both dashboard pages stay untouched),
+        then adds .eq('branch_id', callerBranchId) to the profiles query for
+        non-admins so it matches the branch scope 16.5 already imposes on
+        sales. Other-branch staff are EXCLUDED, never rendered as a misleading
+        $0 (the "excluded" arm the spec permits). The stale
+        role === 'employee' filter becomes a new
+        SALES_REPORT_ROLES = ['encargado','caja','employee'] constant in
+        roles.ts, keeping the existing "or has sales > 0" arm verbatim so a
+        selling admin still appears. "Participación de tienda" is relabelled
+        to "de sucursal" when the caller is branch-scoped.
+      four_new_indexes_required: >
+        DEVIATION/addition. sales has only sales_branch_id_idx (:580) and NO
+        created_at index at all, so every period query would seq-scan. 18.1
+        adds sales_branch_created_idx, sales_store_created_idx,
+        sale_items_branch_id_idx (its SELECT policy filters branch_id, which
+        was unindexed since 15.7) and a partial
+        cash_sessions_branch_closed_idx WHERE status='closed' (the existing
+        :1694 index covers opened_at, but 18.5 filters closed_at).
+      margin_exposes_estimated_and_realized: >
+        The spec's (sale_price - purchase_price) * units reads the CURRENT
+        products snapshot while revenue uses historical sale_items.subtotal.
+        Both ship: margin_estimated (spec-verbatim, primary in the UI) and
+        margin_realized = SUM(subtotal) - SUM(quantity * purchase_price), two
+        extra SQL lines, consistent with revenue. Flagged as an addition.
+      pdf_export_tables_not_charts: >
+        generateAnalyticsReportPdf() mirrors generateSalesReportPdf's
+        structure (zinc palette, header block, 4-column summary card, then one
+        autoTable per section chained off lastAutoTable.finalY). Charts are
+        NOT rasterized - canvas capture would need a new dependency and tables
+        satisfy the spec's "reflecting the currently displayed metrics".
+      review_workload_forecast_input: >
+        ~1,405 authored lines across 6 modified + 7 created files plus
+        migration.sql and the lockfile - far over the 400-line budget.
+        Suggested slices for sdd-tasks: slice 1 both bugfixes +
+        SALES_REPORT_ROLES (~85 lines, independently shippable and
+        revertible); slice 2 migration.sql section 18 + src/lib/analytics.ts
+        (~180, verifiable against live RLS with no UI); slice 3 route/gating/
+        sidebar/four panels/PDF (~1,140, still over budget). The session's
+        standing single-PR exception applies unless the tasks gate decides
+        otherwise.
+      open_questions_carried_forward: >
+        (1) Legacy sale_items with product_id IS NULL (pre-P1) and branch_id
+        IS NULL (pre-store-branches, nullable per 15.7) are excluded from
+        ranking and are invisible to encargado under 16.5 - historical totals
+        will not reconcile store-wide. (2) sales_count replicates only
+        groupSales()'s ref-code arm, not its description+employee+minute
+        fallback, so legacy sales without a "Ref: #" may over-count
+        transactions in branch comparison; revenue is unaffected.
+  tasks:
+    status: done
+    artifact: openspec/changes/analytics/tasks.md
+    note: >
+      3 work-unit slices per design's Migration/Rollout: Slice 1 (~85 lines)
+      both bugfixes + SALES_REPORT_ROLES, independently shippable/revertible;
+      Slice 2 (~180 lines) migration.sql section 18 + src/lib/analytics.ts,
+      verified against live RLS before any UI; Slice 3 (~1,140 lines) route
+      gating + 4 panels + PDF export. Phase 0 pre-apply probe added (row
+      counts on sales/sale_items/cash_sessions, confirms sales has only
+      sales_branch_id_idx today) mirroring stock-phase2/cash-register
+      convention. Manual verification steps from design's Testing Strategy
+      table included verbatim, including the security_invoker=true
+      pg_class.reloptions check and the live-encargado-impersonation check
+      that analytics_branch_comparison/analytics_product_ranking/
+      analytics_cash_discrepancy/analytics_low_stock return zero
+      non-own-branch rows - both explicitly gated before UI ships. All
+      Supabase MCP verification tasks are marked for the orchestrator, since
+      apply sub-agents have no Supabase access in this environment. Chain
+      strategy left pending - the delivery-strategy decision (single PR vs.
+      chained slices) is made interactively by the user via the orchestrator,
+      not by this phase.
+    review_workload_forecast:
+      estimated_changed_lines: "~1,405 total (Slice 1 ~85 / Slice 2 ~180 / Slice 3 ~1,140)"
+      400_line_budget_risk: High
+      chained_prs_recommended: Yes
+      suggested_split: "Slice 1 -> Slice 2 -> Slice 3"
+      delivery_strategy: ask-on-risk
+      chain_strategy: pending
+  apply:
+    status: done
+    note: >
+      Applied 2026-08-30 as a single pass covering all three of tasks.md's
+      suggested slices (Phases 1-6, ~1,405 authored lines against the
+      ~1,405-line design forecast), per the orchestrator's explicit
+      single-PR/size:exception instruction consistent with every prior
+      phase this session. Bugfix A: admin/page.tsx gained `branchesLoaded`
+      state (set true in loadBranches' finally), the sales query now
+      conditionally applies `.eq('branch_id', selectedBranchId)` before
+      `.order()`, deps gained selectedBranchId/branchesLoaded, and the
+      realtime channel/filter moved from store_id=eq to
+      branch_id=eq.${selectedBranchId} with an early-return guard when no
+      branch is selected - localTodayStats() was left byte-for-byte
+      unchanged as designed. encargado/page.tsx confirmed already
+      branch-filtered (design's Deviation #1) and only gained the
+      'analytics' handleSetSection/section-guard arm. Bugfix B:
+      EmployeeReport.tsx now reads the caller's own role/branch_id once via
+      a new step 0, scopes the profiles query to callerBranchId for
+      non-admin/superadmin callers (excluding other-branch staff instead of
+      rendering misleading $0s), replaced the hardcoded role === 'employee'
+      filter with the new SALES_REPORT_ROLES constant from roles.ts, and
+      relabels "Participación de tienda" to "de sucursal" when
+      callerIsBranchScoped. migration.sql section 18 (18.1-18.7) was
+      appended verbatim from design.md after section 17.9 (4 new indexes,
+      the security_invoker=true analytics_low_stock view, the 3 SECURITY
+      INVOKER STABLE functions including analytics_branch_comparison's
+      hand-derived branches predicate, grants/revokes, and the commented
+      rollback block) - written into the file only, NOT executed against
+      the database (no Supabase MCP access in this environment; that is
+      explicitly the orchestrator's responsibility, called out below and
+      left unchecked in tasks.md). recharts could not be installed with
+      `npm install` (this repo is pnpm-workspace-based - npm's arborist
+      crashed with "Cannot read properties of null (reading 'matches')"
+      against the existing pnpm-lock.yaml/node_modules layout, and left no
+      partial changes); used `pnpm add recharts` instead, which resolved
+      cleanly to recharts@3.10.1. Built roles.ts (ANALYTICS_ROLES,
+      SALES_REPORT_ROLES), proxy.ts section 11 (mirrors section 10's /pos
+      block), sidebar-items.ts ('analytics' in AdminSection +
+      ADMIN_MENU_ITEMS, auto-inherited by ENCARGADO_MENU_ITEMS via its
+      existing filter, auto-absent from the separately-hardcoded
+      EMPLOYEE_MENU_ITEMS), the standalone /analytics route mirroring
+      /pos's bootstrap pattern, lib/analytics.ts (typed RPC/view wrappers +
+      buildPeriod/formatCurrency helpers), and AnalyticsShell.tsx + 4 panel
+      components (ProductRankingPanel with a units/revenue/margin toggle
+      over a horizontal BarChart, BranchComparisonPanel with the
+      single-row-degenerates-to-KPI-cards behavior for encargado,
+      LowStockPanel as a table with a deficit badge, CashDiscrepancyPanel
+      with a per-branch LineChart plus a per-cashier rollup table) using
+      Recharts v3, matching the existing zinc/emerald Card-based visual
+      language (no shadcn Badge component exists in this repo, so deficit/
+      status indicators use the same inline-span pattern as
+      CashSessionHistoryView.tsx). generateAnalyticsReportPdf() was added
+      to pdfGenerator.ts mirroring generateSalesReportPdf's structure
+      exactly (header block, 4-column summary card, 4 chained autoTable
+      sections) and wired to AnalyticsShell's export button. Verified:
+      `npm run build` (via pnpm) passes with 0 TypeScript errors across
+      every incremental edit and the final combined build, including the
+      new /analytics route appearing in the build's static route list; also
+      ran `npm run lint` and confirmed none of the newly created/modified
+      analytics files introduce new lint errors (pre-existing
+      react-hooks/set-state-in-effect and one @typescript-eslint/no-explicit-any
+      violation exist elsewhere in the repo, unrelated to this change, and
+      were left untouched as out of scope). Did NOT verify: anything
+      requiring a live Supabase session or the applied SQL - see
+      remaining_manual_verification below.
+    remaining_manual_verification: >
+      Orchestrator-owned items 0.1/0.2/2.8/2.9/2.10/6.2 completed after this
+      apply pass (see orchestrator_db_verification below). Still pending -
+      needs a live authenticated browser session per role, same limitation
+      as every prior phase: 1.11, 1.12, 3.7, 4.10-4.13, 5.4 - branch-switch
+      KPI recompute, EmployeeReport scoping, role-based /analytics
+      redirects, admin branch-filter/encargado-own-branch panel behavior,
+      low-stock regression, on-demand refresh, and PDF export content.
+  orchestrator_db_verification: >
+    Completed 2026-08-30. Corrected one design assumption before applying:
+    production already had idx_sales_store_created (store_id, created_at
+    DESC) and idx_sales_employee_id on sales, not reflected in migration.sql
+    (schema drift) - design's planned sales_store_created_idx would have
+    been a redundant duplicate, so it was dropped from section 18.1 in both
+    migration.sql and the applied SQL; only sales_branch_created_idx was
+    genuinely missing and added. Applied section 18 to production via
+    apply_migration (store_analytics_readonly_aggregation), success true.
+    Confirmed security_invoker=true on analytics_low_stock via
+    pg_class.reloptions. Ran a real-impersonation RLS test as the store's
+    actual encargado profile: temporarily set the store's second,
+    normally-inactive branch to is_active=true INSIDE an uncommitted
+    transaction (rolled back at the end, production reconfirmed unchanged
+    afterward) specifically to exercise the sibling-branch-hiding path,
+    since the encargado's real store only has one active branch today.
+    analytics_branch_comparison as encargado returned exactly 1 row (their
+    own branch) despite 2 active branches existing; the same call as admin
+    (positive control, same temp state) returned both branches' 2 rows,
+    proving the encargado result isn't trivially always-1-row.
+    analytics_cash_discrepancy as encargado returned exactly the store's 1
+    closed session, correctly attributed to their own branch.
+    analytics_product_ranking/analytics_low_stock as encargado both
+    returned empty arrays (no leak, though a weak test given how sparse
+    production data is - only 1 sale/sale_item exists store-wide). All
+    non-own-branch-row counts were zero. get_advisors(security): no new
+    finding class - every warning shown is a pre-existing SECURITY DEFINER
+    RPC warning already present before this phase, plus the standing
+    leaked-password-protection warning.
+  verify:
+    status: pending
+  archive:
+    status: pending
+  apply_followup_phase7:
+    status: done
+    date: 2026-08-30
+    note: >
+      User-feedback follow-up patch applied on top of the already-shipped/
+      applied P7 analytics feature, per tasks.md's new "Phase 7: User
+      Feedback Follow-up" section (7.1-7.13 done; 7.14-7.16 left for the
+      orchestrator, same live-Supabase/browser-session limitation as every
+      prior phase). Four user-requested changes, all pre-resolved (no forks
+      to litigate): (1) branch_stock.min_stock was NEVER configurable
+      anywhere in the UI - confirmed via grep before this patch, only the
+      analytics code referenced it and every production row was 0, so the
+      Low Stock panel never showed anything despite real low-stock products.
+      Made it editable per product/branch directly in StockAdjustDialog.tsx
+      (a new independent "Stock mínimo" field, separate from the existing
+      delta/quantity concern), threaded through StockView.tsx via a new
+      branchMinStock state map fetched alongside current_stock. No new
+      RPC/migration needed - branch_stock's existing RLS policy
+      ("Users can manage branch stock in their branch", FOR ALL TO
+      authenticated) already permits a plain client-side .update() gated by
+      the same role access StockView/StockAdjustDialog already require. (2)
+      Removed CashDiscrepancyPanel.tsx entirely per user request (low value)
+      - deleted the file, its import/state/fetch/render in AnalyticsShell.tsx,
+      CashDiscrepancyRow/fetchCashDiscrepancy from analytics.ts, and its
+      autoTable section from pdfGenerator.ts's generateAnalyticsReportPdf().
+      The analytics_cash_discrepancy SQL function was deliberately LEFT AS-IS
+      in migration.sql/production - harmless unused read-only function, no
+      rollback migration written for it. (3)+(4) Added two replacement
+      panels in the vacated grid slot: SalesTrendPanel.tsx ("Ventas por Día",
+      Recharts LineChart of daily revenue, sparse days only - no zero-fill)
+      and CategoryComparisonPanel.tsx ("Comparación por Categorías",
+      horizontal BarChart + table mirroring ProductRankingPanel's style),
+      backed by two new migration.sql section-19 SQL functions written in
+      this pass: analytics_sales_trend(p_from,p_to,p_branch_id) driven FROM
+      sales (RLS-inherited, no manual predicate needed, unlike
+      analytics_branch_comparison in 18.4) and
+      analytics_category_comparison(p_from,p_to,p_branch_id) driven FROM
+      sale_items LEFT JOIN categories (RLS-inherited via sale_items' own
+      Shape D SELECT policy, same reasoning as analytics_product_ranking in
+      18.3; category_id is nullable, uncategorized products roll up under
+      'Sin categoría'). migration.sql section 19 was appended after section
+      18 (both SECURITY INVOKER STABLE, with grants/revokes and a commented
+      rollback block per the 17.7/18.6 precedent) but written into the file
+      ONLY - NOT applied to production, exactly like section 18 in the
+      original Phase 2/apply pass; the orchestrator must run it via Supabase
+      MCP (task 7.14). analytics.ts/AnalyticsShell.tsx/pdfGenerator.ts were
+      updated with the corresponding typed wrappers, state, Promise.all
+      fetch calls, panel renders, and two new PDF autoTable sections
+      ("Tendencia de Ventas"/"Comparación por Categorías") replacing the
+      removed cash section, following the exact cursorY/finalYOf() chaining
+      pattern already established. Verified: pnpm run build passes with 0
+      TypeScript errors (including the /analytics static route);
+      grep -rn "CashDiscrepancyPanel|fetchCashDiscrepancy|CashDiscrepancyRow"
+      src/ returns 0 results; pnpm run lint shows no new errors introduced -
+      every reported error/warning is either pre-existing and untouched by
+      this patch, or (StockAdjustDialog.tsx's react-hooks/set-state-in-effect)
+      was already flagged pre-existing in the original Phase 6 apply note
+      before this patch touched that file. Did NOT touch src/proxy.ts,
+      src/lib/roles.ts, or any RLS policy - this patch is read-only
+      aggregation plus one already-permitted table update, no access/role
+      changes.
+  orchestrator_db_verification_followup: >
+    Completed 2026-08-30, same session as the original P7 DB verification.
+    Applied section 19 to production via apply_migration
+    (store_analytics_sales_trend_category_comparison), success true. Live
+    encargado impersonation (same real profile as the original 2.10 check):
+    by this point the user had made a real test sale, so both new RPCs
+    returned real, correctly-scoped data instead of empty arrays -
+    analytics_sales_trend returned exactly 1 row (2026-08-30, revenue
+    119900.00) and analytics_category_comparison returned exactly 1 row
+    ("Bazar_Hogar", revenue 119900.00, 4 units) - both consistent with the
+    encargado's own branch/store only. Neither function drives FROM the
+    store-wide branches table (unlike analytics_branch_comparison), so no
+    hand-derived predicate was needed - confirmed correct in practice, not
+    just in design reasoning. get_advisors(security) re-run: identical
+    warning list to the pre-section-19 baseline, no new finding class.
+next_recommended: "sdd-verify (after user completes remaining manual UI verification per tasks.md: 1.11/1.12/3.7/4.10-4.13/5.4/7.15)"
+proposal_round2_resolved_by_user:
+  q1_encargado_cross_branch_semantics: >
+    Encargado sees ONLY their own branch in /analytics - "comparison" for
+    encargado degenerates to their own branch alone, no other-branch rows,
+    no store-wide aggregate either. This confirms SECURITY INVOKER is
+    sufficient for the new aggregation views/RPCs (no legitimate need to
+    bypass RLS for encargado), resolving the propose phase's open
+    SECURITY DEFINER vs INVOKER judgment call in favor of INVOKER.
+  q2_default_period: >
+    Last 30 days (rolling window) is the default period on opening
+    /analytics, for ranking/margin/branch-comparison/discrepancy-trend
+    views alike.
+  q3_low_stock_alert_delivery: >
+    Low-stock alerts (min_stock) live only inside the /analytics panel for
+    this phase - no badge/indicator added to the existing StockView.
+    Smaller v1 slice; can be promoted to a StockView badge in a later
+    phase if wanted.
+decisions_resolved_by_user:
+  fork_1_shape: >
+    Hybrid. Fix the two concrete bugs (Dashboard ignores branch selector;
+    EmployeeReport's misleading RLS-inconsistent $0s) in the SAME change as
+    building a new /analytics route for the genuinely new capabilities, in
+    one PR (consistent with this session's standing single-PR-exception
+    choice for every prior phase).
+  fork_2_v1_scope: >
+    All four ALL-in for v1: product ranking (best/worst sellers by units and
+    revenue), branch comparison, low-stock alerts (min_stock), and cash
+    discrepancy trends over time.
+  fork_3_realtime_vs_batch: >
+    On-demand/batch. Metrics recompute when the user opens or refreshes the
+    analytics section - no live Supabase Realtime subscription for this
+    phase.
+  fork_4_chart_library: >
+    Adopt Recharts (new dependency) - the standard Next.js/Shadcn pairing.
+  fork_5_export_scope: >
+    Yes, PDF export, reusing pdfGenerator.ts (already proven, no new
+    dependency for exports).
+  fork_6_role_visibility: >
+    admin + encargado only, matching the current DashboardView/EmployeeReport
+    access gate exactly. No caja/stock analytics view in this phase.
+  fork_7_bundle_bugfixes: >
+    Bundle the bugfixes into this same change/PR rather than shipping them
+    separately first.
+  fork_8_margin_analysis: >
+    Include margin (sale_price - purchase_price) per product/period in v1.
+triggered_by: >
+  Phase 7 of the original multi-phase roadmap defined in
+  openspec/changes/archive/2026-08-28-stock-phase1-catalog/proposal.md.
+  P1 (catalog), store-branches (unplanned insertion), P2 (stock), P5
+  (granular roles, pulled forward), P3 (cash register), P4 (pos-ui, applied
+  and bugfixed but not yet verified/archived - left in_progress per user
+  instruction to move on to P7) are all applied to production. Every prior
+  phase's proposal deferred "analytics" to this phase with no scope beyond
+  the name.
+key_findings:
+  dashboard_ignores_branch_selector: >
+    admin/page.tsx's sales query (171-194) and localTodayStats() (318-357)
+    are unconditionally store-wide despite the header's selectedBranchId
+    selector already existing and being wired to StockView/CashSessionPanel/
+    CashSessionHistoryView. DashboardView/HistoryView never filter by it -
+    only use branchId to attribute a NEW sale via SaleModal. Switching
+    branches in the header produces zero change in Dashboard/History.
+  employee_report_misleading_under_rls: >
+    EmployeeReport.tsx fetches all store profiles (store-wide RLS) but sales
+    scoped to the caller's branch (branch-wide RLS for encargado) - so an
+    encargado sees every employee in the store but sales data only for
+    their own branch, making other-branch employees show misleading $0/0
+    ventas instead of "not visible to you." Also has a stale hardcoded
+    role === 'employee' filter predating the 4-role model.
+  min_stock_column_reserved_for_this_phase: >
+    branch_stock.min_stock (docs/database.md:101) was deliberately added in
+    stock-phase2 with zero behavior and an explicit comment reserving it for
+    "Fase 7" - low-stock/reorder alerting is schema built in advance for
+    this exact phase, not a new idea.
+  product_analytics_fully_greenfield: >
+    Zero best-seller/ranking/margin logic exists anywhere despite
+    sale_items.product_id resolving to real products since P1, and
+    sale_price/purchase_price already existing as product columns.
+  no_charting_library: >
+    package.json has no recharts/chart.js/d3/etc - any visual chart is a new
+    dependency decision with no existing precedent.
+  export_tooling_already_proven: >
+    pdfGenerator.ts (jspdf) and write-excel-file/read-excel-file are already
+    dependencies used for sales-report PDF and catalog import/export -
+    reusable for analytics export with zero new dependencies if desired.
+  caja_stock_employee_have_zero_analytics_today: >
+    canAccess()/homeFor() confirm caja/stock/employee never reach any
+    KPI/dashboard view today - analytics access today is strictly
+    admin/encargado, matching DashboardView/EmployeeReport's existing gate.
+open_forks_for_propose:
+  fork_1_shape: >
+    New dedicated /analytics route (own sidebar section) vs. folding
+    analytics into existing Dashboard/History/Stock/Cash views vs. a hybrid
+    split (fix concrete bugs in place first, then build new route for
+    greenfield capabilities). Exploration recommends the hybrid.
+  fork_2_v1_scope: >
+    Must-have v1 metrics vs. deferred: product ranking (best-sellers/
+    slow-movers), branch comparison, low-stock alerts (min_stock), cash
+    discrepancy trends - all v1, or split across sub-phases?
+  fork_3_realtime_vs_batch: >
+    Real-time (matching today's Dashboard's live realtime subscription) vs.
+    batch/cached aggregation for the new analytics views/RPCs.
+  fork_4_chart_library: >
+    Adopt a charting library (yes/no), and if yes which one - no existing
+    dependency to default to.
+  fork_5_export_scope: >
+    Purely in-app dashboards, or also PDF/Excel export reusing
+    pdfGenerator.ts/write-excel-file (both already proven, low-effort).
+  fork_6_role_visibility: >
+    admin + encargado only (matching current access), or should caja/stock
+    get any restricted view (e.g. "my shift performance")?
+  fork_7_bundle_bugfixes: >
+    Bundle the EmployeeReport role/RLS-consistency fix and the Dashboard/
+    History branch-filter gap into this same change, or ship them as a
+    separate, smaller bugfix change landing first?
+  fork_8_margin_analysis: >
+    Expose sale_price - purchase_price per product/period as a v1 metric,
+    or defer (fully greenfield, no partial implementation to build on)?
+production_data_last_verified: >
+  Not re-verified this phase (exploration agent has no Supabase access) -
+  cheap for the orchestrator to redo before sdd-design given this phase is
+  read-only/aggregation-only (no new writes), lower risk than prior
+  schema-mutating phases.
+status: in_progress

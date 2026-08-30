@@ -2,6 +2,13 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { GroupedSale, getSaleLines } from './salesHelper'
 import type { ReceiptData } from '@/components/shared/ReceiptModal'
+import type {
+  ProductRankingRow,
+  BranchComparisonRow,
+  LowStockRow,
+  SalesTrendRow,
+  CategoryComparisonRow,
+} from './analytics'
 
 // Chilean Currency Formatter (e.g., $15.500)
 const formatCurrency = (value: number) => {
@@ -10,6 +17,14 @@ const formatCurrency = (value: number) => {
     currency: 'CLP',
     maximumFractionDigits: 0
   }).format(value)
+}
+
+// Format a plain 'YYYY-MM-DD' date string (no time component) as DD/MM/YYYY.
+// Parsed manually rather than via `new Date(dateStr)` to avoid a
+// UTC-midnight-to-local-date off-by-one shift in negative UTC offsets.
+const formatDateOnly = (dateStr: string) => {
+  const [year, month, day] = dateStr.split('-')
+  return year && month && day ? `${day}/${month}/${year}` : dateStr
 }
 
 // Format ISO string to readable Date & Time (DD/MM/YYYY HH:MM)
@@ -387,4 +402,210 @@ export function generateReceiptPdf(data: ReceiptData) {
   // Save
   const safeDate = formatDateTime(data.createdAt).replace(/[/:, ]+/g, '-').trim()
   doc.save(`comprobante-${safeDate}.pdf`)
+}
+
+// ─── Analytics Report PDF ──────────────────────────────────────────────────
+// Mirrors generateSalesReportPdf's structure (zinc palette, header block,
+// 4-column summary card, autoTable per section chained off lastAutoTable.
+// finalY). Charts are NOT rasterized here — tables satisfy the spec's
+// "reflecting the currently displayed metrics" with no new dependency.
+
+interface GenerateAnalyticsPdfOptions {
+  storeName: string
+  branchLabel: string
+  periodLabel: string
+  products: ProductRankingRow[]
+  branches: BranchComparisonRow[]
+  lowStock: LowStockRow[]
+  salesTrend: SalesTrendRow[]
+  categories: CategoryComparisonRow[]
+  fileName: string
+}
+
+export function generateAnalyticsReportPdf({
+  storeName,
+  branchLabel,
+  periodLabel,
+  products,
+  branches,
+  lowStock,
+  salesTrend,
+  categories,
+  fileName,
+}: GenerateAnalyticsPdfOptions) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+
+  const colors = {
+    darkZinc: [24, 24, 27],
+    mediumZinc: [113, 113, 122],
+    lightZinc: [244, 244, 245],
+    borderZinc: [228, 228, 231],
+    emerald: [16, 185, 129],
+  }
+
+  const pageWidth = doc.internal.pageSize.getWidth()
+
+  // 1. HEADER
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(colors.mediumZinc[0], colors.mediumZinc[1], colors.mediumZinc[2])
+  doc.text(storeName.toUpperCase(), 14, 15)
+
+  doc.setFontSize(22)
+  doc.setTextColor(colors.darkZinc[0], colors.darkZinc[1], colors.darkZinc[2])
+  doc.text('Reporte de Analítica', 14, 24)
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(10)
+  doc.setTextColor(colors.mediumZinc[0], colors.mediumZinc[1], colors.mediumZinc[2])
+  doc.text(`${periodLabel} · ${branchLabel}`, 14, 30)
+
+  const todayStr = new Date().toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' })
+  doc.setFontSize(8)
+  doc.text(`Generado: ${todayStr}`, pageWidth - 14, 15, { align: 'right' })
+
+  doc.setDrawColor(colors.borderZinc[0], colors.borderZinc[1], colors.borderZinc[2])
+  doc.setLineWidth(0.5)
+  doc.line(14, 34, pageWidth - 14, 34)
+
+  // 2. SUMMARY CARD (4 columns: revenue, transactions, margin, low-stock count)
+  const totalRevenue = products.reduce((acc, p) => acc + p.revenue, 0)
+  const totalTransactions = branches.reduce((acc, b) => acc + b.sales_count, 0)
+  const totalMargin = products.reduce((acc, p) => acc + p.margin_estimated, 0)
+  const lowStockCount = lowStock.length
+
+  const summaryY = 38
+  const summaryHeight = 22
+  doc.setFillColor(colors.lightZinc[0], colors.lightZinc[1], colors.lightZinc[2])
+  doc.roundedRect(14, summaryY, pageWidth - 28, summaryHeight, 3, 3, 'F')
+
+  const colWidth = (pageWidth - 28) / 4
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(8)
+  doc.setTextColor(colors.mediumZinc[0], colors.mediumZinc[1], colors.mediumZinc[2])
+  doc.text('INGRESOS TOTALES', 18, summaryY + 6)
+  doc.setFontSize(13)
+  doc.setTextColor(16, 185, 129)
+  doc.text(formatCurrency(totalRevenue), 18, summaryY + 14)
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(8)
+  doc.setTextColor(colors.mediumZinc[0], colors.mediumZinc[1], colors.mediumZinc[2])
+  doc.text('TRANSACCIONES', 18 + colWidth, summaryY + 6)
+  doc.setFontSize(13)
+  doc.setTextColor(colors.darkZinc[0], colors.darkZinc[1], colors.darkZinc[2])
+  doc.text(`${totalTransactions}`, 18 + colWidth, summaryY + 14)
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(8)
+  doc.setTextColor(colors.mediumZinc[0], colors.mediumZinc[1], colors.mediumZinc[2])
+  doc.text('MARGEN ESTIMADO', 18 + colWidth * 2, summaryY + 6)
+  doc.setFontSize(13)
+  doc.setTextColor(colors.darkZinc[0], colors.darkZinc[1], colors.darkZinc[2])
+  doc.text(formatCurrency(totalMargin), 18 + colWidth * 2, summaryY + 14)
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(8)
+  doc.setTextColor(colors.mediumZinc[0], colors.mediumZinc[1], colors.mediumZinc[2])
+  doc.text('STOCK BAJO', 18 + colWidth * 3, summaryY + 6)
+  doc.setFontSize(13)
+  doc.setTextColor(lowStockCount > 0 ? 217 : colors.darkZinc[0], lowStockCount > 0 ? 119 : colors.darkZinc[1], lowStockCount > 0 ? 6 : colors.darkZinc[2])
+  doc.text(`${lowStockCount} producto${lowStockCount === 1 ? '' : 's'}`, 18 + colWidth * 3, summaryY + 14)
+
+  let cursorY = summaryY + summaryHeight + 6
+  const finalYOf = () => (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY
+
+  // 3. PRODUCT RANKING TABLE
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(11)
+  doc.setTextColor(colors.darkZinc[0], colors.darkZinc[1], colors.darkZinc[2])
+  doc.text('Ranking de Productos', 14, cursorY)
+  autoTable(doc, {
+    startY: cursorY + 3,
+    head: [['Producto', 'Unidades', 'Ingresos', 'Margen Estimado', 'Margen Realizado']],
+    body: products.map((p) => [
+      p.product_name,
+      String(p.units_sold),
+      formatCurrency(p.revenue),
+      formatCurrency(p.margin_estimated),
+      formatCurrency(p.margin_realized),
+    ]),
+    theme: 'grid',
+    headStyles: { fillColor: [39, 39, 42], textColor: [255, 255, 255], fontSize: 8.5, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8, textColor: [24, 24, 27], cellPadding: 2.5 },
+    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 14, right: 14 },
+  })
+  cursorY = finalYOf() + 10
+
+  // 4. BRANCH COMPARISON TABLE
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(11)
+  doc.text('Comparación de Sucursales', 14, cursorY)
+  autoTable(doc, {
+    startY: cursorY + 3,
+    head: [['Sucursal', 'Ingresos', 'Ventas', 'Stock']],
+    body: branches.map((b) => [b.branch_name, formatCurrency(b.revenue), String(b.sales_count), String(b.stock_units)]),
+    theme: 'grid',
+    headStyles: { fillColor: [39, 39, 42], textColor: [255, 255, 255], fontSize: 8.5, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8, textColor: [24, 24, 27], cellPadding: 2.5 },
+    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 14, right: 14 },
+  })
+  cursorY = finalYOf() + 10
+
+  // 5. LOW STOCK TABLE
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(11)
+  doc.text('Alertas de Stock Bajo', 14, cursorY)
+  autoTable(doc, {
+    startY: cursorY + 3,
+    head: [['Producto', 'Sucursal', 'Stock Actual', 'Mínimo', 'Déficit']],
+    body: lowStock.map((r) => [r.product_name, r.branch_name, String(r.current_stock), String(r.min_stock), String(r.deficit)]),
+    theme: 'grid',
+    headStyles: { fillColor: [39, 39, 42], textColor: [255, 255, 255], fontSize: 8.5, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8, textColor: [24, 24, 27], cellPadding: 2.5 },
+    columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 14, right: 14 },
+  })
+  cursorY = finalYOf() + 10
+
+  // 6. SALES TREND TABLE
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(11)
+  doc.text('Tendencia de Ventas', 14, cursorY)
+  autoTable(doc, {
+    startY: cursorY + 3,
+    head: [['Fecha', 'Ingresos']],
+    body: salesTrend.map((r) => [formatDateOnly(r.day), formatCurrency(r.revenue)]),
+    theme: 'grid',
+    headStyles: { fillColor: [39, 39, 42], textColor: [255, 255, 255], fontSize: 8.5, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8, textColor: [24, 24, 27], cellPadding: 2.5 },
+    columnStyles: { 1: { halign: 'right' } },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 14, right: 14 },
+  })
+  cursorY = finalYOf() + 10
+
+  // 7. CATEGORY COMPARISON TABLE
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(11)
+  doc.text('Comparación por Categorías', 14, cursorY)
+  autoTable(doc, {
+    startY: cursorY + 3,
+    head: [['Categoría', 'Unidades', 'Ingresos']],
+    body: categories.map((c) => [c.category_name, String(c.units_sold), formatCurrency(c.revenue)]),
+    theme: 'grid',
+    headStyles: { fillColor: [39, 39, 42], textColor: [255, 255, 255], fontSize: 8.5, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8, textColor: [24, 24, 27], cellPadding: 2.5 },
+    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 14, right: 14 },
+  })
+
+  doc.save(fileName)
 }

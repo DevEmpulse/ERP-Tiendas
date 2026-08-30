@@ -135,6 +135,7 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
   const [products, setProducts] = useState<Product[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [branchStock, setBranchStock] = useState<Map<string, number>>(new Map())
+  const [branchMinStock, setBranchMinStock] = useState<Map<string, number>>(new Map())
   const [productsLoading, setProductsLoading] = useState(true)
 
   // ── Search & Filter state ──────────────────────────────────────────────────
@@ -194,17 +195,16 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
       if (branchId) {
         const { data: stockRows, error: stockErr } = await supabase
           .from('branch_stock')
-          .select('product_id, current_stock')
+          .select('product_id, current_stock, min_stock')
           .eq('branch_id', branchId)
         if (!stockErr) {
-          setBranchStock(
-            new Map(((stockRows as { product_id: string; current_stock: number }[]) || []).map(
-              (s) => [s.product_id, s.current_stock]
-            ))
-          )
+          const rows = (stockRows as { product_id: string; current_stock: number; min_stock: number }[]) || []
+          setBranchStock(new Map(rows.map((s) => [s.product_id, s.current_stock])))
+          setBranchMinStock(new Map(rows.map((s) => [s.product_id, s.min_stock])))
         }
       } else {
         setBranchStock(new Map())
+        setBranchMinStock(new Map())
       }
     } catch (err: unknown) {
       console.error('Error loading products:', err)
@@ -252,17 +252,16 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
         if (branchId) {
           const { data: stockRows, error: stockErr } = await supabase
             .from('branch_stock')
-            .select('product_id, current_stock')
+            .select('product_id, current_stock, min_stock')
             .eq('branch_id', branchId)
           if (!ignore && !stockErr) {
-            setBranchStock(
-              new Map(((stockRows as { product_id: string; current_stock: number }[]) || []).map(
-                (s) => [s.product_id, s.current_stock]
-              ))
-            )
+            const rows = (stockRows as { product_id: string; current_stock: number; min_stock: number }[]) || []
+            setBranchStock(new Map(rows.map((s) => [s.product_id, s.current_stock])))
+            setBranchMinStock(new Map(rows.map((s) => [s.product_id, s.min_stock])))
           }
         } else if (!ignore) {
           setBranchStock(new Map())
+          setBranchMinStock(new Map())
         }
       } catch (err: unknown) {
         console.error('Error loading products:', err)
@@ -914,6 +913,7 @@ export function StockView({ storeId, branchId, branchName }: StockViewProps) {
         branchId={branchId}
         branchName={branchName}
         currentStock={adjustTarget ? (branchStock.get(adjustTarget.id) ?? 0) : undefined}
+        minStock={adjustTarget ? (branchMinStock.get(adjustTarget.id) ?? 0) : undefined}
         onAdjusted={async () => {
           await loadProducts()
         }}

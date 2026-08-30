@@ -5,6 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Input } from '@/components/ui/input'
 import { Users, Award, CalendarDays } from 'lucide-react'
 import { groupSales } from '@/lib/salesHelper'
+import { SALES_REPORT_ROLES } from '@/lib/roles'
 
 interface EmployeePerf {
   id: string
@@ -21,6 +22,7 @@ export function EmployeeReport() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   const [loading, setLoading] = useState(true)
   const [employees, setEmployees] = useState<EmployeePerf[]>([])
+  const [callerIsBranchScoped, setCallerIsBranchScoped] = useState(false)
 
   const supabase = createClient()
 
@@ -63,11 +65,33 @@ export function EmployeeReport() {
           end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
         }
 
-        // 1. Fetch all profiles in the store
-        const { data: profiles, error: pError } = await supabase
+        // 0. Read the caller's own scope once — self-contained, so
+        // EmployeesView and both dashboard pages stay untouched.
+        const { data: authUser } = await supabase.auth.getUser()
+        const { data: callerProfile } = await supabase
+          .from('profiles')
+          .select('role, branch_id')
+          .eq('id', authUser.user!.id)
+          .single()
+
+        const callerRole = callerProfile?.role ?? null
+        const callerBranchId = callerProfile?.branch_id ?? null
+        const isBranchScoped = callerRole !== 'admin' && callerRole !== 'superadmin'
+        setCallerIsBranchScoped(isBranchScoped)
+
+        // 1. Fetch profiles in the store, scoped to the caller's branch when
+        // the caller is not admin/superadmin — matches the branch scope RLS
+        // already imposes on the sales query below, so other-branch staff
+        // are excluded instead of rendered as a misleading $0.
+        let profilesQuery = supabase
           .from('profiles')
           .select('id, name, email, role')
-          .order('name', { ascending: true })
+
+        if (isBranchScoped && callerBranchId) {
+          profilesQuery = profilesQuery.eq('branch_id', callerBranchId)
+        }
+
+        const { data: profiles, error: pError } = await profilesQuery.order('name', { ascending: true })
 
         if (pError) throw pError
 
@@ -101,8 +125,9 @@ export function EmployeeReport() {
 
         // 4. Map profiles to performance data
         const mappedPerf: EmployeePerf[] = (profiles || [])
-          // Only show employees or admins that have registered sales (or are of role employee)
-          .filter((p) => p.role === 'employee' || salesByEmp[p.id]?.count > 0)
+          // Show every POS-operating role by default, plus anyone (e.g. an
+          // admin) who actually sold in the period.
+          .filter((p) => (SALES_REPORT_ROLES as readonly string[]).includes(p.role ?? '') || salesByEmp[p.id]?.count > 0)
           .map((p) => {
             const stats = salesByEmp[p.id] || { total: 0, count: 0 }
             const share = periodTotal > 0 ? (stats.total / periodTotal) * 100 : 0
@@ -275,7 +300,7 @@ export function EmployeeReport() {
                   {/* Share Progress Bar */}
                   <div className="space-y-1.5">
                     <div className="flex justify-between text-[11px] text-zinc-400">
-                      <span>Participación de tienda:</span>
+                      <span>Participación de {callerIsBranchScoped ? 'sucursal' : 'tienda'}:</span>
                       <span className="font-semibold">{emp.shareOfSales}%</span>
                     </div>
                     <div className="w-full bg-zinc-100 dark:bg-zinc-850 h-2 rounded-full overflow-hidden">

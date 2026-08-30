@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { updateSession } from '@/utils/supabase/middleware'
-import { homeFor, POS_ROLES, STOCK_ROLES } from '@/lib/roles'
+import { homeFor, POS_ROLES, STOCK_ROLES, ANALYTICS_ROLES } from '@/lib/roles'
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
@@ -134,6 +134,14 @@ export async function proxy(request: NextRequest) {
       role === 'encargado' ||
       (POS_ROLES as readonly string[]).includes(role ?? '')
     if (!isPosAllowed) {
+      return redirectWithCookies(homeFor(role))
+    }
+  }
+
+  // 11. Access control for /analytics
+  if (pathname.startsWith('/analytics')) {
+    const isAnalyticsAllowed = (ANALYTICS_ROLES as readonly string[]).includes(role ?? '')
+    if (!isAnalyticsAllowed) {
       return redirectWithCookies(homeFor(role))
     }
   }

@@ -2144,4 +2144,291 @@ CREATE POLICY "Sellers can delete sale items in their scope" ON public.sale_item
 -- DROP TABLE IF EXISTS public.cash_movements CASCADE;
 -- DROP TABLE IF EXISTS public.cash_sessions CASCADE;
 
+-- ==============================================================================
+-- 18. STORE ANALYTICS — read-only aggregation (Phase 7)
+-- ==============================================================================
+-- Nothing here mutates. Every object is SECURITY INVOKER so the existing
+-- policies (§15.6 branch_stock, §16.4 products, §16.5 sales/sale_items,
+-- §17.3 cash_sessions) do the scoping. The ONE exception is 18.4, which must
+-- re-derive it by hand — see the comment there.
+
+-- 18.1 Indexes. sales has sales_branch_id_idx (:580) and, via schema drift
+-- not reflected earlier in this file, an existing idx_sales_store_created
+-- (store_id, created_at DESC) already covers the store-wide period scan used
+-- by 18.4's per-branch LATERAL join. Only the branch-scoped composite is
+-- actually missing — creating a second (store_id, created_at) index under a
+-- new name would just duplicate idx_sales_store_created.
+CREATE INDEX IF NOT EXISTS sales_branch_created_idx
+  ON public.sales (branch_id, created_at DESC);
+-- sale_items.branch_id (§15.7) has no index; its SELECT policy filters on it.
+CREATE INDEX IF NOT EXISTS sale_items_branch_id_idx
+  ON public.sale_items (branch_id);
+-- cash_sessions_branch_opened_idx (:1694) indexes opened_at; 18.5 filters closed_at.
+CREATE INDEX IF NOT EXISTS cash_sessions_branch_closed_idx
+  ON public.cash_sessions (branch_id, closed_at DESC) WHERE status = 'closed';
+
+-- 18.2 Low-stock alerts. WITHOUT security_invoker a view runs with the VIEW
+-- OWNER's rights (postgres, which bypasses RLS) and would expose every store.
+-- min_stock is NOT NULL DEFAULT 0 (:811), so "not configured" is exactly 0 —
+-- there is no NULL arm to handle.
+DROP VIEW IF EXISTS public.analytics_low_stock;
+CREATE VIEW public.analytics_low_stock
+WITH (security_invoker = true) AS
+SELECT bs.store_id,
+       bs.branch_id,
+       b.name  AS branch_name,
+       bs.product_id,
+       p.name  AS product_name,
+       p.barcode,
+       bs.current_stock,
+       bs.min_stock,
+       (bs.min_stock - bs.current_stock) AS deficit
+  FROM public.branch_stock bs
+  JOIN public.products p ON p.id = bs.product_id
+  JOIN public.branches b ON b.id = bs.branch_id
+ WHERE bs.min_stock > 0
+   AND bs.current_stock <= bs.min_stock
+   AND p.is_active;
+
+-- 18.3 Product ranking + margin. sale_items' Shape D SELECT policy (:1481)
+-- already limits an encargado to their branch; p_branch_id can only narrow.
+-- Legacy free-text lines (product_id IS NULL, pre-P1) are excluded: they have
+-- no product to rank or price.
+DROP FUNCTION IF EXISTS public.analytics_product_ranking(timestamptz, timestamptz, uuid);
+CREATE FUNCTION public.analytics_product_ranking(
+  p_from      timestamptz,
+  p_to        timestamptz,
+  p_branch_id uuid DEFAULT NULL
+)
+RETURNS TABLE (
+  product_id       uuid,
+  product_name     text,
+  units_sold       bigint,
+  revenue          numeric,
+  margin_estimated numeric,
+  margin_realized  numeric
+)
+LANGUAGE sql SECURITY INVOKER STABLE SET search_path = public
+AS $$
+  SELECT si.product_id,
+         MAX(COALESCE(p.name, si.product_name)),
+         SUM(si.quantity)::bigint,
+         SUM(si.subtotal),
+         SUM(si.quantity * (p.sale_price - p.purchase_price)),
+         SUM(si.subtotal - si.quantity * p.purchase_price)
+    FROM public.sale_items si
+    JOIN public.sales    s ON s.id = si.sale_id
+    JOIN public.products p ON p.id = si.product_id
+   WHERE s.created_at >= p_from
+     AND s.created_at <  p_to
+     AND si.product_id IS NOT NULL
+     AND (p_branch_id IS NULL OR si.branch_id = p_branch_id)
+   GROUP BY si.product_id;
+$$;
+
+-- 18.4 Branch comparison. THE ONE PLACE that re-derives scoping by hand.
+-- branches is store-wide readable (§14.2 :550-553), so driving FROM it would
+-- hand an encargado one zero-row per sibling branch: RLS zeroes the NUMBERS
+-- but does not hide the BRANCHES. The explicit predicate below is what
+-- enforces the resolved decision "encargado sees ONLY their own branch".
+-- sales_count replicates groupSales()'s ref-code grouping (salesHelper.ts:144)
+-- so combined payments count as ONE transaction, matching the Dashboard.
+DROP FUNCTION IF EXISTS public.analytics_branch_comparison(timestamptz, timestamptz);
+CREATE FUNCTION public.analytics_branch_comparison(
+  p_from timestamptz,
+  p_to   timestamptz
+)
+RETURNS TABLE (
+  branch_id   uuid,
+  branch_name text,
+  revenue     numeric,
+  sales_count bigint,
+  stock_units bigint
+)
+LANGUAGE sql SECURITY INVOKER STABLE SET search_path = public
+AS $$
+  SELECT b.id,
+         b.name,
+         COALESCE(sa.revenue, 0),
+         COALESCE(sa.sales_count, 0),
+         COALESCE(st.stock_units, 0)
+    FROM public.branches b
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(SUM(s.total_amount), 0) AS revenue,
+             COUNT(DISTINCT COALESCE(
+               substring(s.description from 'Ref:\s*#([A-Za-z0-9-]+)'),
+               s.id::text))::bigint           AS sales_count
+        FROM public.sales s
+       WHERE s.branch_id = b.id
+         AND s.created_at >= p_from
+         AND s.created_at <  p_to
+    ) sa ON true
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(SUM(bs.current_stock), 0)::bigint AS stock_units
+        FROM public.branch_stock bs
+       WHERE bs.branch_id = b.id
+    ) st ON true
+   WHERE b.is_active
+     AND b.store_id = public.get_current_user_store_id()
+     AND (
+       public.get_current_user_role() IN ('admin','superadmin')
+       OR b.id = public.get_current_user_branch_id()
+     )
+   ORDER BY 3 DESC;
+$$;
+
+-- 18.5 Cash discrepancy trend. Returns one row per CLOSED session rather than
+-- a pre-grouped aggregate: cardinality is bounded (~1-2 sessions/branch/day,
+-- so <100 rows for a 30-day window) and the panel needs per-session points for
+-- the time series AND a per-cashier rollup from the same fetch.
+DROP FUNCTION IF EXISTS public.analytics_cash_discrepancy(timestamptz, timestamptz, uuid);
+CREATE FUNCTION public.analytics_cash_discrepancy(
+  p_from      timestamptz,
+  p_to        timestamptz,
+  p_branch_id uuid DEFAULT NULL
+)
+RETURNS TABLE (
+  session_id      uuid,
+  branch_id       uuid,
+  branch_name     text,
+  closed_at       timestamptz,
+  closed_by       uuid,
+  cashier_name    text,
+  expected_amount numeric,
+  counted_amount  numeric,
+  discrepancy     numeric
+)
+LANGUAGE sql SECURITY INVOKER STABLE SET search_path = public
+AS $$
+  SELECT cs.id, cs.branch_id, b.name, cs.closed_at, cs.closed_by,
+         COALESCE(pr.name, pr.email, 'Sin nombre'),
+         cs.expected_amount, cs.counted_amount, cs.discrepancy
+    FROM public.cash_sessions cs
+    JOIN public.branches b  ON b.id  = cs.branch_id
+    LEFT JOIN public.profiles pr ON pr.id = cs.closed_by
+   WHERE cs.status = 'closed'
+     AND cs.closed_at >= p_from
+     AND cs.closed_at <  p_to
+     AND (p_branch_id IS NULL OR cs.branch_id = p_branch_id)
+   ORDER BY cs.closed_at;
+$$;
+
+-- 18.6 Grants. Read-only surface, revoke-then-grant per §17.7 (:1896-1902).
+-- security_invoker views also require the CALLER to hold SELECT on the base
+-- tables — branch_stock has it (:1036), products/sales/sale_items via
+-- Supabase's default privileges for `authenticated`.
+GRANT SELECT ON public.analytics_low_stock TO authenticated;
+REVOKE ALL    ON public.analytics_low_stock FROM anon;
+REVOKE EXECUTE ON FUNCTION public.analytics_product_ranking(timestamptz, timestamptz, uuid)   FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.analytics_product_ranking(timestamptz, timestamptz, uuid)   TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.analytics_branch_comparison(timestamptz, timestamptz)       FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.analytics_branch_comparison(timestamptz, timestamptz)       TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.analytics_cash_discrepancy(timestamptz, timestamptz, uuid)  FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.analytics_cash_discrepancy(timestamptz, timestamptz, uuid)  TO authenticated;
+
+-- 18.7 ROLLBACK (do not run automatically) — reverse of section 18, bottom to top:
+-- DROP FUNCTION IF EXISTS public.analytics_cash_discrepancy(timestamptz, timestamptz, uuid);
+-- DROP FUNCTION IF EXISTS public.analytics_branch_comparison(timestamptz, timestamptz);
+-- DROP FUNCTION IF EXISTS public.analytics_product_ranking(timestamptz, timestamptz, uuid);
+-- DROP VIEW     IF EXISTS public.analytics_low_stock;
+-- DROP INDEX    IF EXISTS public.cash_sessions_branch_closed_idx;
+-- DROP INDEX    IF EXISTS public.sale_items_branch_id_idx;
+-- DROP INDEX    IF EXISTS public.sales_branch_created_idx;
+-- No table, column, or row is touched in either direction; min_stock returns
+-- to inert. The indexes are safe to keep if only the views are rolled back.
+
+-- 19. STORE ANALYTICS — sales trend + category comparison (Phase 7 follow-up)
+
+-- 19.1 Daily sales trend. Driven FROM sales (already branch-scoped via RLS
+-- for encargado, same as analytics_branch_comparison's per-branch LATERAL),
+-- so no manual predicate is needed here — unlike 18.4, this does not drive
+-- FROM the store-wide-readable `branches` table.
+DROP FUNCTION IF EXISTS public.analytics_sales_trend(timestamptz, timestamptz, uuid);
+CREATE FUNCTION public.analytics_sales_trend(
+  p_from      timestamptz,
+  p_to        timestamptz,
+  p_branch_id uuid DEFAULT NULL
+)
+RETURNS TABLE (
+  day     date,
+  revenue numeric
+)
+LANGUAGE sql SECURITY INVOKER STABLE SET search_path = public
+AS $$
+  SELECT date_trunc('day', s.created_at)::date AS day,
+         SUM(s.total_amount) AS revenue
+    FROM public.sales s
+   WHERE s.created_at >= p_from
+     AND s.created_at <  p_to
+     AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
+   GROUP BY 1
+   ORDER BY 1;
+$$;
+
+-- 19.2 Category comparison. Driven FROM sale_items (already branch-scoped
+-- via its own Shape D SELECT policy, same inheritance reasoning as
+-- analytics_product_ranking in 18.3), LEFT JOIN categories since
+-- products.category_id is nullable (ON DELETE SET NULL) — uncategorized
+-- products roll up under 'Sin categoría'.
+DROP FUNCTION IF EXISTS public.analytics_category_comparison(timestamptz, timestamptz, uuid);
+CREATE FUNCTION public.analytics_category_comparison(
+  p_from      timestamptz,
+  p_to        timestamptz,
+  p_branch_id uuid DEFAULT NULL
+)
+RETURNS TABLE (
+  category_id   uuid,
+  category_name text,
+  revenue       numeric,
+  units_sold    bigint
+)
+LANGUAGE sql SECURITY INVOKER STABLE SET search_path = public
+AS $$
+  SELECT c.id,
+         COALESCE(c.name, 'Sin categoría'),
+         SUM(si.subtotal),
+         SUM(si.quantity)::bigint
+    FROM public.sale_items si
+    JOIN public.sales    s ON s.id = si.sale_id
+    JOIN public.products p ON p.id = si.product_id
+    LEFT JOIN public.categories c ON c.id = p.category_id
+   WHERE s.created_at >= p_from
+     AND s.created_at <  p_to
+     AND si.product_id IS NOT NULL
+     AND (p_branch_id IS NULL OR si.branch_id = p_branch_id)
+   GROUP BY c.id, c.name
+   ORDER BY 3 DESC;
+$$;
+
+-- 19.3 Grants.
+REVOKE EXECUTE ON FUNCTION public.analytics_sales_trend(timestamptz, timestamptz, uuid)        FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.analytics_sales_trend(timestamptz, timestamptz, uuid)        TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.analytics_category_comparison(timestamptz, timestamptz, uuid) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.analytics_category_comparison(timestamptz, timestamptz, uuid) TO authenticated;
+
+-- 19.4 ROLLBACK (do not run automatically):
+-- DROP FUNCTION IF EXISTS public.analytics_category_comparison(timestamptz, timestamptz, uuid);
+-- DROP FUNCTION IF EXISTS public.analytics_sales_trend(timestamptz, timestamptz, uuid);
+-- No table, column, or row is touched in either direction.
+-- Applied to production by the orchestrator on 2026-08-30.
+
+-- ==============================================================================
+-- 20. branch_stock.min_stock default changed 0 -> 8 (Phase 7 follow-up)
+-- ==============================================================================
+-- min_stock (§15.6) was never configurable anywhere in the UI before this
+-- follow-up patch and defaulted to 0 ("not configured") for every row, which
+-- made analytics_low_stock (§18.2) permanently empty. Per explicit user
+-- request: seed every existing branch_stock row to 8 and change the column
+-- default so newly-created rows (new product x branch pairs) start at 8
+-- instead of 0. Purely a data/default change — no new column, no RLS change.
+-- Every row remains individually editable afterward via StockAdjustDialog.
+ALTER TABLE public.branch_stock ALTER COLUMN min_stock SET DEFAULT 8;
+UPDATE public.branch_stock SET min_stock = 8;
+
+-- 20.1 ROLLBACK (do not run automatically):
+-- ALTER TABLE public.branch_stock ALTER COLUMN min_stock SET DEFAULT 0;
+-- Rolling back the seeded values themselves is not meaningful (they were all
+-- 0/unconfigured before, indistinguishable from any admin-edited value of 0
+-- entered afterward) - only the DEFAULT is reversible with confidence.
+
 

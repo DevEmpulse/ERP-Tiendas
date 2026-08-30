@@ -63,6 +63,7 @@ export default function AdminPage() {
   // Branch selector state — active branches only; exactly one is always selected
   const [branches, setBranches] = useState<Branch[]>([])
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null)
+  const [branchesLoaded, setBranchesLoaded] = useState(false)
   const [refreshBranchesKey, setRefreshBranchesKey] = useState(0)
 
   const triggerRefreshBranches = () => {
@@ -78,7 +79,7 @@ export default function AdminPage() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
       const sec = params.get('section') as AdminSection | null
-      if (sec && sec !== 'pos') {
+      if (sec && sec !== 'pos' && sec !== 'analytics') {
         setActiveSection(sec)
       }
     }
@@ -87,6 +88,10 @@ export default function AdminPage() {
   const handleSetSection = (section: AdminSection) => {
     if (section === 'pos') {
       router.push('/pos')
+      return
+    }
+    if (section === 'analytics') {
+      router.push('/analytics')
       return
     }
     setActiveSection(section)
@@ -161,15 +166,14 @@ export default function AdminPage() {
 
   // 2. Fetch sales & employees for this store
   useEffect(() => {
-    if (!userProfile?.store_id) return
+    if (!userProfile?.store_id || !branchesLoaded) return
 
     async function loadData() {
       setDataLoading(true)
       try {
-        const [salesResult, employeesResult] = await Promise.all([
-          supabase
-            .from('sales')
-            .select(`
+        let salesQuery = supabase
+          .from('sales')
+          .select(`
               id,
               created_at,
               description,
@@ -191,7 +195,13 @@ export default function AdminPage() {
                 subtotal
               )
             `)
-            .order('created_at', { ascending: false }),
+
+        if (selectedBranchId) {
+          salesQuery = salesQuery.eq('branch_id', selectedBranchId)
+        }
+
+        const [salesResult, employeesResult] = await Promise.all([
+          salesQuery.order('created_at', { ascending: false }),
           supabase
             .from('profiles')
             .select('id, name, email, role, store_id, branch_id')
@@ -217,7 +227,7 @@ export default function AdminPage() {
     }
 
     loadData()
-  }, [userProfile, supabase, refreshSalesKey])
+  }, [userProfile, supabase, refreshSalesKey, selectedBranchId, branchesLoaded])
 
   // 3. Fetch active branches for this store and resolve the selected branch
   useEffect(() => {
@@ -246,6 +256,8 @@ export default function AdminPage() {
         }
       } catch (err) {
         console.error('Error fetching branches:', err)
+      } finally {
+        setBranchesLoaded(true)
       }
     }
 
@@ -262,19 +274,19 @@ export default function AdminPage() {
 
   // Realtime subscription for sales INSERT events
   useEffect(() => {
-    if (!userProfile?.store_id) return
+    if (!userProfile?.store_id || !selectedBranchId) return
 
-    const storeId = userProfile.store_id
+    const branchId = selectedBranchId
 
     const channel = supabase
-      .channel(`realtime-sales-${storeId}`)
+      .channel(`realtime-sales-branch-${branchId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'sales',
-          filter: `store_id=eq.${storeId}`,
+          filter: `branch_id=eq.${branchId}`,
         },
         async (payload) => {
           const newRecord = payload.new as Partial<Sale>
@@ -310,10 +322,10 @@ export default function AdminPage() {
       })
 
     return () => {
-      console.log(`Cleaning up realtime subscription for store ${storeId}...`)
+      console.log(`Cleaning up realtime subscription for branch ${branchId}...`)
       supabase.removeChannel(channel)
     }
-  }, [userProfile?.store_id, supabase])
+  }, [userProfile?.store_id, selectedBranchId, supabase])
 
   // Compute metrics in local timezone
   const localTodayStats = () => {

@@ -57,7 +57,7 @@ export default function EncargadoPage() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
       const sec = params.get('section') as AdminSection | null
-      if (sec && sec !== 'pos') {
+      if (sec && sec !== 'pos' && sec !== 'analytics') {
         setActiveSection(sec)
       }
     }
@@ -66,6 +66,10 @@ export default function EncargadoPage() {
   const handleSetSection = (section: AdminSection) => {
     if (section === 'pos') {
       router.push('/pos')
+      return
+    }
+    if (section === 'analytics') {
+      router.push('/analytics')
       return
     }
     setActiveSection(section)

@@ -161,6 +161,7 @@ export default function EmployeeDashboard({
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}
         onLogout={handleLogout}
+        branchId={profile.branch_id}
       />
 
       {/* Right area */}

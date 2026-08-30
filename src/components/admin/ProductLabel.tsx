@@ -159,7 +159,7 @@ export function ProductLabelPrinter({ products, onPrinted }: ProductLabelPrinter
       style={{ position: 'fixed', top: '-9999px', left: '-9999px' }}
     >
       {products.map((p, i) => (
-        <div key={p.id} className="label">
+        <div key={`${p.id}-${i}`} className="label">
           <svg
             ref={(el) => {
               svgRefs.current[i] = el

@@ -518,6 +518,8 @@ export default function AdminPage() {
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}
         onLogout={handleLogout}
+        branchId={selectedBranchId}
+        cashRefreshKey={refreshSalesKey}
       />
 
       {/* RIGHT AREA Container (Header + Content) */}

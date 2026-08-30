@@ -170,6 +170,8 @@ export function StockView({ storeId, branchId, branchName, role = null, userId =
 
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set())
   const [labelQueue, setLabelQueue] = useState<LabelProduct[]>([])
+  const [labelQuantityTarget, setLabelQuantityTarget] = useState<LabelProduct[] | null>(null)
+  const [labelQuantity, setLabelQuantity] = useState('1')
 
   const [isImportOpen, setIsImportOpen] = useState(false)
   const [lastImported, setLastImported] = useState<LabelProduct[]>([])
@@ -527,12 +529,17 @@ export function StockView({ storeId, branchId, branchName, role = null, userId =
     id: p.id, barcode: p.barcode, name: p.name, sale_price: p.sale_price,
   })
 
-  const handlePrintSingle = (product: Product) => setLabelQueue([toLabelProduct(product)])
+  const openLabelQuantityDialog = (items: LabelProduct[]) => {
+    setLabelQuantity('1')
+    setLabelQuantityTarget(items)
+  }
+
+  const handlePrintSingle = (product: Product) => openLabelQuantityDialog([toLabelProduct(product)])
 
   const handlePrintSelected = () => {
     const selected = products.filter((p) => selectedProductIds.has(p.id))
     if (selected.length === 0) return
-    setLabelQueue(selected.map(toLabelProduct))
+    openLabelQuantityDialog(selected.map(toLabelProduct))
   }
 
   const handleImported = (createdLabelProducts: LabelProduct[]) => {
@@ -543,7 +550,14 @@ export function StockView({ storeId, branchId, branchName, role = null, userId =
 
   const handlePrintImported = () => {
     if (lastImported.length === 0) return
-    setLabelQueue(lastImported)
+    openLabelQuantityDialog(lastImported)
+  }
+
+  const handleConfirmPrintQuantity = () => {
+    if (!labelQuantityTarget) return
+    const qty = Math.min(200, Math.max(1, Math.round(Number(labelQuantity)) || 1))
+    setLabelQueue(labelQuantityTarget.flatMap((p) => Array.from({ length: qty }, () => p)))
+    setLabelQuantityTarget(null)
   }
 
   // ── Price rules tab (unchanged behaviour, moved into its own tab) ──────────
@@ -777,6 +791,55 @@ export function StockView({ storeId, branchId, branchName, role = null, userId =
       <Toaster toasts={toasts} dismiss={dismiss} />
 
       <ProductLabelPrinter products={labelQueue} onPrinted={() => setLabelQueue([])} />
+
+      <Dialog open={!!labelQuantityTarget} onOpenChange={(open) => { if (!open) setLabelQuantityTarget(null) }}>
+        <DialogContent className="sm:max-w-sm bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 rounded-2xl shadow-xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold text-zinc-900 dark:text-zinc-50">
+              Imprimir etiquetas
+            </DialogTitle>
+            <DialogDescription className="text-sm text-zinc-500 dark:text-zinc-400">
+              {labelQuantityTarget && labelQuantityTarget.length === 1
+                ? `¿Cuántas etiquetas de "${labelQuantityTarget[0].name}" querés imprimir?`
+                : `¿Cuántas etiquetas por producto querés imprimir? (${labelQuantityTarget?.length ?? 0} productos)`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Label htmlFor="label-quantity" className="text-xs font-semibold text-zinc-600 dark:text-zinc-400">
+              Cantidad
+            </Label>
+            <Input
+              id="label-quantity"
+              type="number"
+              min={1}
+              max={200}
+              value={labelQuantity}
+              onChange={(e) => setLabelQuantity(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmPrintQuantity() }}
+              className="mt-1.5 h-9 rounded-xl"
+              autoFocus
+            />
+          </div>
+          <DialogFooter className="gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setLabelQuantityTarget(null)}
+              className="h-9 px-4 rounded-xl border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer"
+            >
+              Cancelar
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmPrintQuantity}
+              className="h-9 px-4 rounded-xl bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-zinc-50 dark:hover:bg-zinc-200 dark:text-zinc-950 text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              Imprimir
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ProductImportDialog
         open={isImportOpen}

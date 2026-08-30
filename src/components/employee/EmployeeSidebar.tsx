@@ -12,6 +12,8 @@ interface EmployeeSidebarProps {
   isOpen: boolean
   setIsOpen: (isOpen: boolean) => void
   onLogout: () => void
+  branchId?: string | null
+  cashRefreshKey?: number
 }
 
 export function EmployeeSidebar(props: EmployeeSidebarProps) {

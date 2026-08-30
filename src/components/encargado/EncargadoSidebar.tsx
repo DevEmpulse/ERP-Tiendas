@@ -12,6 +12,8 @@ interface EncargadoSidebarProps {
   isOpen: boolean
   setIsOpen: (isOpen: boolean) => void
   onLogout: () => void
+  branchId?: string | null
+  cashRefreshKey?: number
 }
 
 export function EncargadoSidebar(props: EncargadoSidebarProps) {

@@ -450,6 +450,8 @@ export default function EncargadoPage() {
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}
         onLogout={handleLogout}
+        branchId={userProfile?.branch_id ?? null}
+        cashRefreshKey={refreshSalesKey}
       />
 
       {/* RIGHT AREA Container (Header + Content) */}
